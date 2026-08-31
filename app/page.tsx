@@ -45,26 +45,35 @@ export default function Home() {
   async function loadData() {
     setLoading(true);
     setMsg('');
-    const { data: { session } } = await supabase.auth.getSession();
-    setSession(session);
-    if (!session) { setLoading(false); return; }
-    
-    await supabase.from('profiles').upsert({ id: session.user.id, nombre: session.user.user_metadata?.nombre || session.user.email?.split('@')[0] || 'Usuario' }, { onConflict: 'id' });
-    const p = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
-    setProfile(p.data);
-    
-    const gm = await supabase.from('group_members').select('group_id, user_id, rol').eq('user_id', session.user.id);
-    const gids = (gm.data || []).map(x => x.group_id);
-    const gs = gids.length ? await supabase.from('groups').select('*').in('id', gids) : { data: [] };
-    setGroups(gs.data || []);
-    
-    const g = (gs.data || [])[0] || null;
-    setGroup(g);
-    if (g) await loadGroup(g);
-    setLoading(false);
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      setSession(currentSession);
+      if (!currentSession) return;
+      
+      await supabase.from('profiles').upsert(
+        { id: currentSession.user.id, nombre: currentSession.user.user_metadata?.nombre || currentSession.user.email?.split('@')[0] || 'Usuario' }, 
+        { onConflict: 'id' }
+      );
+      const p = await supabase.from('profiles').select('*').eq('id', currentSession.user.id).single();
+      setProfile(p.data);
+      
+      const gm = await supabase.from('group_members').select('group_id, user_id, rol').eq('user_id', currentSession.user.id);
+      const gids = (gm.data || []).map(x => x.group_id);
+      const gs = gids.length ? await supabase.from('groups').select('*').in('id', gids) : { data: [] };
+      setGroups(gs.data || []);
+      
+      const g = (gs.data || [])[0] || null;
+      setGroup(g);
+      if (g) await loadGroup(g, currentSession.user.id);
+    } catch (err: any) {
+      console.error('Error cargando datos:', err);
+      setMsg('Error al cargar datos del servidor.');
+    } finally {
+      setLoading(false);
+    }
   }
 
-  async function loadGroup(g: Group) {
+  async function loadGroup(g: Group, currentUserId: string) {
     const m = await supabase.from('group_members').select('group_id,user_id,rol').eq('group_id', g.id);
     const ids = (m.data || []).map(x => x.user_id);
     const ps = ids.length ? await supabase.from('profiles').select('*').in('id', ids) : { data: [] };
@@ -74,12 +83,15 @@ export default function Home() {
     setSeasons(ss.data || []);
     const s = (ss.data || [])[0] || null;
     setSeason(s);
-    if (s) await loadSeason(s);
+    if (s) await loadSeason(s, currentUserId);
     else { setChallenge(null); setWorkouts([]); setDebts([]); }
   }
 
-  async function loadSeason(s: Season) {
-    const c = await supabase.from('challenges').select('*').eq('season_id', s.id).eq('user_id', session.user.id).maybeSingle();
+  async function loadSeason(s: Season, currentUserId: string) {
+    const uid = currentUserId || session?.user?.id;
+    if (!uid) return;
+
+    const c = await supabase.from('challenges').select('*').eq('season_id', s.id).eq('user_id', uid).maybeSingle();
     setChallenge(c.data);
     if (c.data) setDiasEntreno(c.data.dias_carrera_semana + c.data.dias_fuerza_semana);
     
@@ -92,19 +104,28 @@ export default function Home() {
 
   useEffect(() => {
     loadData();
-    const { data } = supabase.auth.onAuthStateChange(() => loadData());
+    const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      if (newSession) {
+        loadData();
+      } else {
+        setLoading(false);
+      }
+    });
     return () => data.subscription.unsubscribe();
   }, []);
 
   async function handleAuth() {
     setMsg('');
+    setLoading(true);
     if (login) {
       const r = await supabase.auth.signInWithPassword({ email, password });
-      if (r.error) setMsg(r.error.message);
+      if (r.error) { setMsg(r.error.message); setLoading(false); }
     } else {
       const r = await supabase.auth.signUp({ email, password, options: { data: { nombre } } });
       if (r.error) setMsg(r.error.message);
       else setMsg('Cuenta creada. Revisa tu email si requiere confirmación.');
+      setLoading(false);
     }
   }
 
@@ -162,13 +183,13 @@ export default function Home() {
 
     setWorkoutForm({ ...workoutForm, file: null });
     setMsg('Entrenamiento enviado.');
-    await loadSeason(season);
+    await loadSeason(season, session.user.id);
   }
 
   async function validateWorkout(w: Workout, status: 'aprobado' | 'rechazado', reason = '') {
     const r = await supabase.from('workouts').update({ estado: status, motivo_rechazo: status === 'rechazado' ? reason : null, validado_por: session.user.id, validado_en: new Date().toISOString() }).eq('id', w.id);
     if (r.error) setMsg(r.error.message);
-    else { setReject(null); await loadSeason(season!); }
+    else { setReject(null); await loadSeason(season!, session.user.id); }
   }
 
   async function settle() {
@@ -182,7 +203,7 @@ export default function Home() {
     if (ir.error) { setMsg(ir.error.message); return; }
     setSelectedDebt({});
     setMsg('Liquidación registrada.');
-    await loadSeason(season!);
+    await loadSeason(season!, session.user.id);
   }
 
   const isAdmin = !!members.find(m => m.user_id === session?.user?.id && m.rol === 'admin');
@@ -231,7 +252,7 @@ export default function Home() {
           <h1>{group.nombre}</h1>
           <div className="muted">Invitación: <b>{group.codigo_invitacion}</b> · {season?.nombre || 'Sin temporada'}</div>
         </div>
-        <select value={season?.id || ''} onChange={async e => { const s = seasons.find(x => x.id === e.target.value); if (s) { setSeason(s); await loadSeason(s); } }}>
+        <select value={season?.id || ''} onChange={async e => { const s = seasons.find(x => x.id === e.target.value); if (s) { setSeason(s); await loadSeason(s, session.user.id); } }}>
           {seasons.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
           <option value="">—</option>
         </select>
