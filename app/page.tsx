@@ -39,7 +39,7 @@ export default function Home() {
   const [seasonForm, setSeasonForm] = useState({ nombre: 'Q3 2026', inicio: '2026-07-01', fin: '2026-09-30' });
   const [challengeForm, setChallengeForm] = useState({ carrera: 0, fuerza: 0 });
   const [workoutForm, setWorkoutForm] = useState({ tipo: 'carrera' as 'carrera' | 'fuerza', fecha: new Date().toISOString().slice(0, 10), duracion: 40, file: null as File | null });
-  const [reject, setReject] = useState<{ id: string, reason: string } | null>(null);
+  const [reject, setReject] = useState<{ id: string; reason: string } | null>(null);
   const [selectedDebt, setSelectedDebt] = useState<Record<string, boolean>>({});
 
   async function loadData() {
@@ -185,9 +185,37 @@ export default function Home() {
   const myWorkouts = workouts.filter(w => w.user_id === session?.user?.id);
   const pending = workouts.filter(w => w.estado === 'pendiente');
 
-  if (loading) return <div className="center"><div className="spinner" />Cargando…</div>;
-  if (!session) return <AuthSection login={login} setLogin={setLogin} email={email} setEmail={setEmail} password={password} setPassword={setPassword} nombre={nombre} setNombre={setNombre} submit={handleAuth} msg={msg} />;
-  if (!group) return <main className="shell"><HeaderView profile={profile} logout={() => supabase.auth.signOut()} /><section className="hero"><span className="eyebrow">RETOS & DEUDAS</span><h1>Empieza tu grupo.</h1><p>Crea una comunidad para entrenar, validar pruebas y llevar las deudas automáticamente.</p></section><div className="grid2"><CardView title="Crear grupo"><input value={newGroup} onChange={e => setNewGroup(e.target.value)} placeholder="Nombre del grupo" /><button onClick={createGroup}>Crear grupo</button></CardView><CardView title="Unirme a un grupo"><input value={invite} onChange={e => setInvite(e.target.value)} placeholder="Código de invitación" /><button onClick={joinGroup}>Unirme</button></CardView></div>{msg && <NoticeView text={msg} /></main>;
+  if (loading) {
+    return <div className="center"><div className="spinner" />Cargando…</div>;
+  }
+  
+  if (!session) {
+    return <AuthSection login={login} setLogin={setLogin} email={email} setEmail={setEmail} password={password} setPassword={setPassword} nombre={nombre} setNombre={setNombre} submit={handleAuth} msg={msg} />;
+  }
+  
+  if (!group) {
+    return (
+      <main className="shell">
+        <HeaderView profile={profile} logout={() => supabase.auth.signOut()} />
+        <section className="hero">
+          <span className="eyebrow">RETOS & DEUDAS</span>
+          <h1>Empieza tu grupo.</h1>
+          <p>Crea una comunidad para entrenar, validar pruebas y llevar las deudas automáticamente.</p>
+        </section>
+        <div className="grid2">
+          <CardView title="Crear grupo">
+            <input value={newGroup} onChange={e => setNewGroup(e.target.value)} placeholder="Nombre del grupo" />
+            <button onClick={createGroup}>Crear grupo</button>
+          </CardView>
+          <CardView title="Unirme a un grupo">
+            <input value={invite} onChange={e => setInvite(e.target.value)} placeholder="Código de invitación" />
+            <button onClick={joinGroup}>Unirme</button>
+          </CardView>
+        </div>
+        {msg && <NoticeView text={msg} />}
+      </main>
+    );
+  }
 
   return (
     <main className="shell">
