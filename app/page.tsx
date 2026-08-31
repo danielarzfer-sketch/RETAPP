@@ -37,7 +37,7 @@ export default function Home() {
   const [newGroup, setNewGroup] = useState('');
   const [invite, setInvite] = useState('');
   const [seasonForm, setSeasonForm] = useState({ nombre: 'Q3 2026', inicio: '2026-07-01', fin: '2026-09-30' });
-  const [challengeForm, setChallengeForm] = useState({ carrera: 0, fuerza: 0 });
+  const [diasEntreno, setDiasEntreno] = useState(0);
   const [workoutForm, setWorkoutForm] = useState({ tipo: 'carrera' as 'carrera' | 'fuerza', fecha: new Date().toISOString().slice(0, 10), duracion: 40, file: null as File | null });
   const [reject, setReject] = useState<{ id: string; reason: string } | null>(null);
   const [selectedDebt, setSelectedDebt] = useState<Record<string, boolean>>({});
@@ -81,7 +81,7 @@ export default function Home() {
   async function loadSeason(s: Season) {
     const c = await supabase.from('challenges').select('*').eq('season_id', s.id).eq('user_id', session.user.id).maybeSingle();
     setChallenge(c.data);
-    if (c.data) setChallengeForm({ carrera: c.data.dias_carrera_semana, fuerza: c.data.dias_fuerza_semana });
+    if (c.data) setDiasEntreno(c.data.dias_carrera_semana + c.data.dias_fuerza_semana);
     
     const w = await supabase.from('workouts').select('*, profiles(*)').eq('season_id', s.id).order('fecha', { ascending: false });
     setWorkouts((w.data || []).map((x: any) => ({ ...x, profile: x.profiles })));
@@ -135,7 +135,12 @@ export default function Home() {
 
   async function saveChallenge() {
     if (!season) { setMsg('Crea primero una temporada.'); return; }
-    const r = await supabase.from('challenges').upsert({ season_id: season.id, user_id: session.user.id, dias_carrera_semana: Number(challengeForm.carrera), dias_fuerza_semana: Number(challengeForm.fuerza) }, { onConflict: 'season_id,user_id' }).select().single();
+    const r = await supabase.from('challenges').upsert({ 
+      season_id: season.id, 
+      user_id: session.user.id, 
+      dias_carrera_semana: Number(diasEntreno), 
+      dias_fuerza_semana: 0 
+    }, { onConflict: 'season_id,user_id' }).select().single();
     if (r.error) setMsg(r.error.message);
     else { setChallenge(r.data); setMsg('Reto guardado.'); }
   }
@@ -252,8 +257,16 @@ export default function Home() {
       {tab === 'reto' && (
         <section className="grid2">
           <CardView title="Mi compromiso semanal">
-            <label>Carrera (días/semana)<input type="number" min="0" max="7" value={challengeForm.carrera} onChange={e => setChallengeForm({ ...challengeForm, carrera: Number(e.target.value) })} /></label>
-            <label>Fuerza (días/semana)<input type="number" min="0" max="7" value={challengeForm.fuerza} onChange={e => setChallengeForm({ ...challengeForm, fuerza: Number(e.target.value) })} /></label>
+            <label>
+              Días de entrenamiento por semana
+              <input 
+                type="number" 
+                min="0" 
+                max="7" 
+                value={diasEntreno} 
+                onChange={e => setDiasEntreno(Number(e.target.value))} 
+              />
+            </label>
             <button onClick={saveChallenge}>Guardar reto</button>
           </CardView>
           {isAdmin && (
@@ -312,13 +325,14 @@ function NoticeView({ text }: { text: string }) {
 
 function InicioSection({ profile, group, season, challenge, total, myWorkouts, debts, members }: any) {
   const approved = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
+  const totalDias = challenge ? challenge.dias_carrera_semana + challenge.dias_fuerza_semana : 0;
   return (
     <>
       <section className="hero compact">
         <div>
           <span className="eyebrow">HOLA, {profile?.nombre?.toUpperCase()}</span>
           <h1>{season ? season.nombre : 'Configura tu temporada'}</h1>
-          <p>{challenge ? `${challenge.dias_carrera_semana} días de carrera + ${challenge.dias_fuerza_semana} de fuerza cada semana.` : 'Todavía no has configurado tu reto.'}</p>
+          <p>{challenge ? `${totalDias} días de entrenamiento cada semana.` : 'Todavía no has configurado tu reto.'}</p>
         </div>
         <div className="debtBig"><span>Deuda pendiente</span><strong>{money(total)}</strong></div>
       </section>
@@ -329,7 +343,7 @@ function InicioSection({ profile, group, season, challenge, total, myWorkouts, d
         <StatView n={debts.length} t="Semanas con deuda" />
       </div>
       <CardView title="Regla">
-        <p className="muted">Cada día no cumplido cuesta <b>5 €</b>. Los entrenamientos extra no compensan días de otro tipo. Carrera: mínimo 40 min. Fuerza: mínimo 50 min.</p>
+        <p className="muted">Cada día no cumplido cuesta <b>5 €</b>. Carrera: mínimo 40 min. Fuerza: mínimo 50 min.</p>
       </CardView>
     </>
   );
