@@ -395,7 +395,6 @@ export default function Home() {
   }
 
   async function validateWorkout(w: Workout, status: 'aprobado' | 'rechazado', reason = '') {
-    // Evitar que un admin valide su propio entrenamiento
     if (w.user_id === session.user.id) {
       setMsg('No puedes validar tu propio entrenamiento. Debe revisarlo otro administrador.');
       return;
@@ -605,6 +604,7 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
   const pendingGroupTotal = workouts.filter((w: Workout) => w.estado === 'pendiente').length;
 
   const myDebts = debts.filter((d: Debt) => d.user_id === userId);
+  const myTotalDebt = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.importe_pendiente), 0);
   const failedWorkoutsCount = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.dias_totales_fallados || 0), 0);
 
   const totalThisMonth = myWorkouts.filter((w: Workout) => {
@@ -615,20 +615,32 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
 
   const totalAllTime = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
 
+  const importePorDia = challenge ? Number(challenge.importe_dia || 5) : 5;
+  const pendingMoneyEquivalent = pendingThisWeek * importePorDia;
+
   return (
     <>
-      <section className="hero compact">
+      <section className="hero compact" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <span className="eyebrow">HOLA, {profile?.nombre?.toUpperCase()}</span>
           <h1>{season ? season.nombre : 'Configura tu temporada'}</h1>
           <p>{challenge ? `${targetDays} días de entrenamiento a la semana (${money(challenge.importe_dia || 5)}/día fallado).` : 'Todavía no has configurado tu reto.'}</p>
         </div>
-        <div className="debtBig"><span>Deuda global</span><strong>{money(total)}</strong></div>
+        <div style={{ display: 'flex', gap: '1.5rem' }}>
+          <div className="debtBig">
+            <span>Tu deuda</span>
+            <strong style={{ color: '#ff6b6b' }}>{money(myTotalDebt)}</strong>
+          </div>
+          <div className="debtBig" style={{ borderLeft: '1px solid #444', paddingLeft: '1.5rem' }}>
+            <span>Deuda global</span>
+            <strong>{money(total)}</strong>
+          </div>
+        </div>
       </section>
 
       <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
         <StatView n={approvedThisWeek} t="Aprobados esta semana" bg="#d4edda" color="#155724" />
-        <StatView n={pendingThisWeek} t="Restantes esta semana" bg="#fff3cd" color="#856404" />
+        <StatView n={`${pendingThisWeek} (${money(pendingMoneyEquivalent)})`} t="Restantes esta semana" bg="#fff3cd" color="#856404" />
         <StatView n={pendingGroupTotal} t="Pendientes de validación" bg="#cce5ff" color="#004085" />
         <StatView n={failedWorkoutsCount} t="Entrenamientos fallidos" bg="#f8d7da" color="#721c24" />
         <StatView n={totalThisMonth} t="Totales este mes" bg="#e2e3e5" color="#383d41" />
