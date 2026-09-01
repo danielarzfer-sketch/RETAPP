@@ -979,17 +979,28 @@ function AdminSection({ workouts, pendingChallenges, pendingRevocations, validat
               <div>
                 <b>{w.profile?.nombre}</b>
                 <div><small>{w.tipo.toUpperCase()} · {w.duracion_minutos} min · {formatDate(w.fecha)}</small></div>
-                <a 
-                  href="#" 
-                  onClick={async e => { 
-                    e.preventDefault(); 
-                    const { data } = await supabase.storage.from('capturas').createSignedUrl(w.captura_url, 600); 
-                    if (data?.signedUrl) window.open(data.signedUrl, '_blank'); 
+                <button 
+                  className="ghost"
+                  style={{ fontSize: '0.85rem', padding: '4px 8px', marginTop: '6px', cursor: 'pointer' }}
+                  onClick={async () => {
+                    try {
+                      const publicUrl = supabase.storage.from('capturas').getPublicUrl(w.captura_url).data.publicUrl;
+                      const { data } = await supabase.storage.from('capturas').createSignedUrl(w.captura_url, 600);
+                      
+                      const targetUrl = data?.signedUrl || publicUrl;
+
+                      if (targetUrl) {
+                        window.open(targetUrl, '_blank', 'noopener,noreferrer');
+                      } else {
+                        alert('No se pudo obtener la imagen.');
+                      }
+                    } catch (err) {
+                      console.error('Error al abrir la imagen:', err);
+                    }
                   }}
-                  style={{ color: '#0070f3', textDecoration: 'underline' }}
                 >
                   🔍 Ver comprobante adjunto
-                </a>
+                </button>
               </div>
               <div className="actions" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
                 <button onClick={() => validate(w, 'aprobado')}>Aprobar</button>
