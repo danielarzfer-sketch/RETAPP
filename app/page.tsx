@@ -15,6 +15,15 @@ const supabase = createClient();
 const money = (n: number) => `${Number(n || 0).toFixed(2)} €`;
 const formatDate = (s: string) => new Date(s + 'T00:00:00').toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
+// Ayudante para obtener el lunes de la semana actual
+const getMondayOfCurrentWeek = () => {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(d.setDate(diff));
+  return monday.toISOString().slice(0, 10);
+};
+
 export default function Home() {
   const [session, setSession] = useState<any>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -36,13 +45,9 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [nombre, setNombre] = useState('');
 
-  const [newGroup, setNewGroup] = useState('');
-  const [invite, setInvite] = useState('');
-  const [seasonForm, setSeasonForm] = useState({ nombre: 'Q3 2026', inicio: '2026-07-01', fin: '2026-09-30' });
   const [diasEntreno, setDiasEntreno] = useState(0);
   const [workoutForm, setWorkoutForm] = useState({ tipo: 'carrera' as 'carrera' | 'fuerza', fecha: new Date().toISOString().slice(0, 10), duracion: 40, file: null as File | null });
   const [reject, setReject] = useState<{ id: string; reason: string } | null>(null);
-  const [selectedDebt, setSelectedDebt] = useState<Record<string, boolean>>({});
 
   async function loadData() {
     setLoading(true);
@@ -87,7 +92,6 @@ export default function Home() {
     const s = (ss.data || [])[0] || null;
     setSeason(s);
 
-    // Cargar historial completo de entrenos del grupo para estadísticas globales
     const sIds = (ss.data || []).map(x => x.id);
     if (sIds.length) {
       const gw = await supabase.from('workouts').select('*').in('season_id', sIds).eq('estado', 'aprobado');
@@ -106,11 +110,17 @@ export default function Home() {
     setChallenge(c.data);
     if (c.data) setDiasEntreno(c.data.dias_carrera_semana + c.data.dias_fuerza_semana);
     
-    // Traer todos los entrenamientos de la temporada para mostrar validaciones correctamente
     const w = await supabase.from('workouts').select('*').eq('season_id', s.id).order('fecha', { ascending: false });
     setWorkouts((w.data || []).map((x: any) => ({ ...x, profile: currentMembers.find(m => m.user_id === x.user_id)?.profile })));
     
-    const d = await supabase.from('v_deuda_pendiente').select('*').eq('season_id', s.id).order('semana_inicio', { ascending: false });
+    // Filtrar deudas para que NO incluyan la semana en curso (solo semanas con fecha_inicio estrictamente menor al lunes actual)
+    const currentMonday = getMondayOfCurrentWeek();
+    const d = await supabase.from('v_deuda_pendiente')
+      .select('*')
+      .eq('season_id', s.id)
+      .lt('semana_inicio', currentMonday)
+      .order('semana_inicio', { ascending: false });
+      
     setDebts(d.data || []);
   }
 
@@ -138,13 +148,18 @@ export default function Home() {
     }
   }
 
-  async function promoteAdmin(targetUserId: string) {
-    if (!group) return;
-    const r = await supabase.from('group_members').update({ rol: 'admin' }).eq('group_id', group.id).eq('user_id', targetUserId);
+  async function deleteWorkout(workout: Workout) {
+    if (!confirm('¿Seguro que quieres eliminar este entrenamiento?')) return;
+    
+    if (workout.captura_url) {
+      await supabase.storage.from('capturas').remove([workout.captura_url]);
+    }
+    
+    const r = await supabase.from('workouts').delete().eq('id', workout.id);
     if (r.error) setMsg(r.error.message);
     else {
-      setMsg('Rol actualizado a administrador.');
-      await loadGroup(group, session.user.id);
+      setMsg('Entrenamiento eliminado.');
+      await loadSeason(season!, session.user.id);
     }
   }
 
@@ -236,7 +251,7 @@ export default function Home() {
 
       {msg && <NoticeView text={msg} />}
 
-      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} debts={debts} members={members} />}
+      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} members={members} />}
       
       {tab === 'reto' && (
         <section className="grid2">
@@ -247,28 +262,179 @@ export default function Home() {
             </label>
             <button onClick={saveChallenge}>Guardar reto</button>
           </CardView>
+          <CardView title="Estado del Reto Actual">
+            <p><b>Temporada activa:</b> {season ? season.nombre : 'Ninguna'}</p>
+            {season && <p><b>Período:</b> {formatDate(season.fecha_inicio)} al {formatDate(season.fecha_fin)}</p>}
+            <p><b>Días fijados:</b> {challenge ? `${challenge.dias_carrera_semana + challenge.dias_fuerza_semana} días/semana` : 'Sin configurar'}</p>
+          </CardView>
         </section>
       )}
 
-      {tab === 'entreno' && <EntrenosSection form={workoutForm} setForm={setWorkoutForm} upload={uploadWorkout} workouts={myWorkouts} />}
+      {tab === 'entreno' && <EntrenosSection form={workoutForm} setForm={setWorkoutForm} upload={uploadWorkout} workouts={myWorkouts} onDelete={deleteWorkout} />}
       
       {tab === 'deudas' && <DeudasSection debts={debts} members={members} total={totalGrupoDeuda} />}
       
       {tab === 'comparativa' && <ComparativasSection members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} />}
 
-      {tab === 'grupo' && <GrupoSection group={group!} members={members} isAdmin={isAdmin} promoteAdmin={promoteAdmin} />}
+      {tab === 'grupo' && <GrupoSection group={group!} members={members} isAdmin={isAdmin} promoteAdmin={() => {}} />}
       
-      {tab === 'admin' && isAdmin && <AdminSection workouts={pendingWorkouts} validate={validateWorkout} reject={reject} setReject={setReject} />}
+      {tab === 'admin' && isAdmin && <AdminSection workouts={pendingWorkouts} validate={validateWorkout} reject={reject} setReject={setReject} onDelete={deleteWorkout} />}
     </main>
   );
 }
 
 // ---------------- SUB-COMPONENTES ----------------
 
-function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) {
-  const [selectedWeek, setSelectedWeek] = useState(0);
+function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, members }: any) {
+  const currentMonday = getMondayOfCurrentWeek();
+  const currentMonthStr = new Date().toISOString().slice(0, 7);
 
-  // 1. Datos para el gráfico de líneas (entrenamientos por mes por usuario)
+  // 1. Entrenamientos aprobados esta semana (del usuario actual)
+  const approvedThisWeek = myWorkouts.filter((w: Workout) => w.estado === 'aprobado' && w.fecha >= currentMonday).length;
+  
+  // 2. Entrenamientos pendientes esta semana (del usuario actual)
+  const pendingThisWeek = myWorkouts.filter((w: Workout) => w.estado === 'pendiente' && w.fecha >= currentMonday).length;
+  
+  // 3. Entrenamientos pendientes de aprobación (de TODO el grupo)
+  const pendingGroupTotal = workouts.filter((w: Workout) => w.estado === 'pendiente').length;
+
+  // 4. Entrenamientos totales del mes (del usuario actual)
+  const totalThisMonth = myWorkouts.filter((w: Workout) => w.estado === 'aprobado' && w.fecha.startsWith(currentMonthStr)).length;
+
+  // 5. Entrenamientos totales (del usuario actual)
+  const totalAllTime = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
+
+  const totalDias = challenge ? challenge.dias_carrera_semana + challenge.dias_fuerza_semana : 0;
+
+  return (
+    <>
+      <section className="hero compact">
+        <div>
+          <span className="eyebrow">HOLA, {profile?.nombre?.toUpperCase()}</span>
+          <h1>{season ? season.nombre : 'Configura tu temporada'}</h1>
+          <p>{challenge ? `${totalDias} días de entrenamiento a la semana.` : 'Todavía no has configurado tu reto.'}</p>
+        </div>
+        <div className="debtBig"><span>Deuda global</span><strong>{money(total)}</strong></div>
+      </section>
+
+      <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+        <StatView n={approvedThisWeek} t="Aprobados esta semana" />
+        <StatView n={pendingThisWeek} t="Tus pendientes (semana)" />
+        <StatView n={pendingGroupTotal} t="Pendientes de aprobación (Grupo)" />
+        <StatView n={totalThisMonth} t="Totales este mes" />
+        <StatView n={totalAllTime} t="Totales históricos" />
+      </div>
+    </>
+  );
+}
+
+function StatView({ n, t }: { n: any; t: string }) {
+  return <div className="stat" style={{ padding: '1rem', border: '1px solid #333', borderRadius: '8px' }}><strong>{n}</strong><span>{t}</span></div>;
+}
+
+function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
+  return (
+    <section className="grid2">
+      <CardView title="Subir entrenamiento">
+        <select value={form.tipo} onChange={e => setForm({ ...form, tipo: e.target.value as any, duracion: e.target.value === 'carrera' ? 40 : 50 })}>
+          <option value="carrera">🏃 Carrera</option>
+          <option value="fuerza">💪 Fuerza</option>
+        </select>
+        <input type="date" value={form.fecha} onChange={e => setForm({ ...form, fecha: e.target.value })} />
+        <input type="number" min={form.tipo === 'carrera' ? 40 : 50} value={form.duracion} onChange={e => setForm({ ...form, duracion: Number(e.target.value) })} />
+        <label className="file">{form.file ? form.file.name : 'Elegir captura'}<input type="file" accept="image/*" onChange={e => setForm({ ...form, file: e.target.files?.[0] || null })} /></label>
+        <button onClick={upload}>Enviar para validar</button>
+      </CardView>
+      <CardView title="Mis entrenamientos">
+        <div className="list">
+          {workouts.length ? workouts.map((w: Workout) => (
+            <div className="row" key={w.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div>
+                <b>{w.tipo === 'carrera' ? '🏃' : '💪'} {w.duracion_minutos} min</b>
+                <small style={{ marginLeft: '8px' }}>{formatDate(w.fecha)}</small>
+                <span className={'status ' + w.estado} style={{ marginLeft: '8px' }}>{w.estado}</span>
+              </div>
+              <button className="danger" style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => onDelete(w)}>Eliminar</button>
+            </div>
+          )) : <p className="muted">Aún no has subido entrenamientos.</p>}
+        </div>
+      </CardView>
+    </section>
+  );
+}
+
+function DeudasSection({ debts, members, total }: any) {
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div className="hero compact">
+        <div className="debtBig">
+          <span>Deuda Global del Grupo</span>
+          <strong>{money(total)}</strong>
+        </div>
+      </div>
+      <CardView title="Desglose por participantes">
+        <div className="debtList">
+          {debts.length ? debts.map((d: Debt) => (
+            <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`}>
+              <span>
+                <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
+                <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
+              </span>
+              <strong>{money(d.importe_pendiente)}</strong>
+            </div>
+          )) : <p className="muted">Sin deudas acumuladas de semanas anteriores. 🎉</p>}
+        </div>
+      </CardView>
+    </section>
+  );
+}
+
+function AdminSection({ workouts, validate, reject, setReject, onDelete }: any) {
+  return (
+    <section>
+      <CardView title={`Entrenamientos pendientes de validación (${workouts.length})`}>
+        <div className="list">
+          {workouts.length ? workouts.map((w: Workout) => (
+            <div className="adminrow" key={w.id} style={{ borderBottom: '1px solid #333', padding: '10px 0' }}>
+              <div>
+                <b>{w.profile?.nombre}</b>
+                <div><small>{w.tipo === 'carrera' ? '🏃 Carrera' : '💪 Fuerza'} · {w.duracion_minutos} min · {formatDate(w.fecha)}</small></div>
+                <a 
+                  href="#" 
+                  onClick={async e => { 
+                    e.preventDefault(); 
+                    const { data } = await supabase.storage.from('capturas').createSignedUrl(w.captura_url, 600); 
+                    if (data?.signedUrl) window.open(data.signedUrl, '_blank'); 
+                  }}
+                  style={{ color: '#0070f3', textDecoration: 'underline' }}
+                >
+                  🔍 Ver comprobante adjunto
+                </a>
+              </div>
+              <div className="actions" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                <button onClick={() => validate(w, 'aprobado')}>Aprobar</button>
+                <button className="danger" onClick={() => setReject({ id: w.id, reason: '' })}>Rechazar</button>
+                <button className="ghost" onClick={() => onDelete(w)}>Eliminar</button>
+              </div>
+            </div>
+          )) : <p className="muted">No hay publicaciones pendientes de revisión.</p>}
+        </div>
+      </CardView>
+      {reject && (
+        <div className="modal">
+          <div className="modalbox">
+            <h2>Motivo del rechazo</h2>
+            <textarea value={reject.reason} onChange={e => setReject({ ...reject, reason: e.target.value })} placeholder="Escribe el motivo…" />
+            <button onClick={() => validate(workouts.find((w: Workout) => w.id === reject.id)!, 'rechazado', reject.reason || 'No válido')}>Confirmar rechazo</button>
+            <button className="ghost" onClick={() => setReject(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) {
   const chartData = useMemo(() => {
     const months: Record<string, any> = {};
     workouts.forEach((w: Workout) => {
@@ -284,7 +450,6 @@ function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) 
     return Object.values(months).sort((a, b) => a.month.localeCompare(b.month));
   }, [workouts, members]);
 
-  // 2. Datos para la tabla semanal
   const weeklyData = useMemo(() => {
     const daysOfWeek = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
     return members.map((m: Member) => {
@@ -292,7 +457,7 @@ function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) 
       const attendance = daysOfWeek.map((_, index) => {
         return userWorkouts.some((w: Workout) => {
           const day = new Date(w.fecha).getDay();
-          const adjustedDay = day === 0 ? 6 : day - 1; // Ajustar domingo a índice 6
+          const adjustedDay = day === 0 ? 6 : day - 1;
           return adjustedDay === index;
         });
       });
@@ -312,13 +477,7 @@ function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) 
               <Tooltip />
               <Legend />
               {members.map((m: Member, idx: number) => (
-                <Line 
-                  key={m.user_id} 
-                  type="monotone" 
-                  dataKey={m.profile?.nombre || 'Usuario'} 
-                  stroke={`hsl(${idx * 137.5 % 360}, 70%, 50%)`} 
-                  strokeWidth={2} 
-                />
+                <Line key={m.user_id} type="monotone" dataKey={m.profile?.nombre || 'Usuario'} stroke={`hsl(${idx * 137.5 % 360}, 70%, 50%)`} strokeWidth={2} />
               ))}
             </LineChart>
           </ResponsiveContainer>
@@ -349,32 +508,6 @@ function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) 
   );
 }
 
-function DeudasSection({ debts, members, total }: any) {
-  return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div className="hero compact">
-        <div className="debtBig">
-          <span>Deuda Global del Grupo</span>
-          <strong>{money(total)}</strong>
-        </div>
-      </div>
-      <CardView title="Desglose por participantes">
-        <div className="debtList">
-          {debts.length ? debts.map((d: Debt) => (
-            <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`}>
-              <span>
-                <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
-                <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
-              </span>
-              <strong>{money(d.importe_pendiente)}</strong>
-            </div>
-          )) : <p className="muted">Sin deudas registradas. ¡Todo el mundo al día! 🎉</p>}
-        </div>
-      </CardView>
-    </section>
-  );
-}
-
 function GrupoSection({ group, members, isAdmin, promoteAdmin }: any) {
   return (
     <section className="grid2">
@@ -392,103 +525,6 @@ function GrupoSection({ group, members, isAdmin, promoteAdmin }: any) {
               )}
             </div>
           ))}
-        </div>
-      </CardView>
-    </section>
-  );
-}
-
-function AdminSection({ workouts, validate, reject, setReject }: any) {
-  return (
-    <section>
-      <CardView title={`Entrenamientos pendientes de validación (${workouts.length})`}>
-        <div className="list">
-          {workouts.length ? workouts.map((w: Workout) => (
-            <div className="adminrow" key={w.id} style={{ borderBottom: '1px solid #333', padding: '10px 0' }}>
-              <div>
-                <b>{w.profile?.nombre}</b>
-                <div><small>{w.tipo === 'carrera' ? '🏃 Carrera' : '💪 Fuerza'} · {w.duracion_minutos} min · {formatDate(w.fecha)}</small></div>
-                <a 
-                  href="#" 
-                  onClick={async e => { 
-                    e.preventDefault(); 
-                    const { data } = await supabase.storage.from('capturas').createSignedUrl(w.captura_url, 600); 
-                    if (data?.signedUrl) window.open(data.signedUrl, '_blank'); 
-                  }}
-                  style={{ color: '#0070f3', textDecoration: 'underline' }}
-                >
-                  🔍 Ver comprobante adjunto
-                </a>
-              </div>
-              <div className="actions" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
-                <button onClick={() => validate(w, 'aprobado')}>Aprobar</button>
-                <button className="danger" onClick={() => setReject({ id: w.id, reason: '' })}>Rechazar</button>
-              </div>
-            </div>
-          )) : <p className="muted">No hay publicaciones pendientes de revisión.</p>}
-        </div>
-      </CardView>
-      {reject && (
-        <div className="modal">
-          <div className="modalbox">
-            <h2>Motivo del rechazo</h2>
-            <textarea value={reject.reason} onChange={e => setReject({ ...reject, reason: e.target.value })} placeholder="Escribe el motivo…" />
-            <button onClick={() => validate(workouts.find((w: Workout) => w.id === reject.id)!, 'rechazado', reject.reason || 'No válido')}>Confirmar rechazo</button>
-            <button className="ghost" onClick={() => setReject(null)}>Cancelar</button>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function InicioSection({ profile, season, challenge, total, myWorkouts, debts, members }: any) {
-  const approved = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
-  const totalDias = challenge ? challenge.dias_carrera_semana + challenge.dias_fuerza_semana : 0;
-  return (
-    <>
-      <section className="hero compact">
-        <div>
-          <span className="eyebrow">HOLA, {profile?.nombre?.toUpperCase()}</span>
-          <h1>{season ? season.nombre : 'Configura tu temporada'}</h1>
-          <p>{challenge ? `${totalDias} días de entrenamiento a la semana.` : 'Todavía no has configurado tu reto.'}</p>
-        </div>
-        <div className="debtBig"><span>Deuda global</span><strong>{money(total)}</strong></div>
-      </section>
-      <div className="stats">
-        <StatView n={approved} t="Entrenos aprobados" />
-        <StatView n={myWorkouts.filter((w: Workout) => w.estado === 'pendiente').length} t="Pendientes" />
-        <StatView n={members.length} t="Miembros" />
-      </div>
-    </>
-  );
-}
-
-function StatView({ n, t }: { n: any; t: string }) {
-  return <div className="stat"><strong>{n}</strong><span>{t}</span></div>;
-}
-
-function EntrenosSection({ form, setForm, upload, workouts }: any) {
-  return (
-    <section className="grid2">
-      <CardView title="Subir entrenamiento">
-        <select value={form.tipo} onChange={e => setForm({ ...form, tipo: e.target.value as any, duracion: e.target.value === 'carrera' ? 40 : 50 })}>
-          <option value="carrera">🏃 Carrera</option>
-          <option value="fuerza">💪 Fuerza</option>
-        </select>
-        <input type="date" value={form.fecha} onChange={e => setForm({ ...form, fecha: e.target.value })} />
-        <input type="number" min={form.tipo === 'carrera' ? 40 : 50} value={form.duracion} onChange={e => setForm({ ...form, duracion: Number(e.target.value) })} />
-        <label className="file">{form.file ? form.file.name : 'Elegir captura'}<input type="file" accept="image/*" onChange={e => setForm({ ...form, file: e.target.files?.[0] || null })} /></label>
-        <button onClick={upload}>Enviar para validar</button>
-      </CardView>
-      <CardView title="Mis entrenamientos">
-        <div className="list">
-          {workouts.length ? workouts.map((w: Workout) => (
-            <div className="row" key={w.id}>
-              <div><b>{w.tipo === 'carrera' ? '🏃' : '💪'} {w.duracion_minutos} min</b><small>{formatDate(w.fecha)}</small></div>
-              <span className={'status ' + w.estado}>{w.estado}</span>
-            </div>
-          )) : <p className="muted">Aún no has subido entrenamientos.</p>}
         </div>
       </CardView>
     </section>
