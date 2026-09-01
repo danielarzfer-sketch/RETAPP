@@ -18,6 +18,16 @@ type Challenge = {
   estado_importe: 'aprobado' | 'pendiente_aprobacion';
   profile?: Profile;
 };
+type SolicitudRevocacion = {
+  id: string;
+  created_at?: string;
+  user_id: string;
+  group_id: string;
+  challenge_id: string;
+  motivo: string;
+  estado: 'pendiente' | 'aprobada' | 'rechazada';
+  profile?: Profile;
+};
 type Workout = { id: string; season_id: string; user_id: string; tipo: string; fecha: string; duracion_minutos: number; captura_url: string; estado: 'pendiente' | 'aprobado' | 'rechazado'; motivo_rechazo: string | null; profile?: Profile };
 type Debt = { season_id: string; user_id: string; semana_inicio: string; importe_deuda: number; importe_saldado: number; importe_pendiente: number; dias_totales_fallados: number };
 
@@ -55,6 +65,8 @@ export default function Home() {
   const [season, setSeason] = useState<Season | null>(null);
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [pendingChallenges, setPendingChallenges] = useState<Challenge[]>([]);
+  const [pendingRevocations, setPendingRevocations] = useState<SolicitudRevocacion[]>([]);
+  const [myRevocation, setMyRevocation] = useState<SolicitudRevocacion | null>(null);
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [allGroupWorkouts, setAllGroupWorkouts] = useState<Workout[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
@@ -72,6 +84,8 @@ export default function Home() {
   const [codigoUnirse, setCodigoUnirse] = useState('');
   const [diasEntreno, setDiasEntreno] = useState(0);
   const [importeDia, setImporteDia] = useState(5);
+  const [motivoRevocacion, setMotivoRevocacion] = useState('');
+  const [mostrarModalRevocacion, setMostrarModalRevocacion] = useState(false);
   
   const [workoutForm, setWorkoutForm] = useState({ 
     tipo: 'carrera', 
@@ -131,11 +145,11 @@ export default function Home() {
       setAllGroupWorkouts((gw.data || []).map(x => ({ ...x, profile: (ps.data || []).find(p => p.id === x.user_id) })));
     }
 
-    if (s) await loadSeason(s, currentUserId, memberList);
-    else { setChallenge(null); setWorkouts([]); setDebts([]); setPendingChallenges([]); }
+    if (s) await loadSeason(s, currentUserId, memberList, g.id);
+    else { setChallenge(null); setWorkouts([]); setDebts([]); setPendingChallenges([]); setPendingRevocations([]); setMyRevocation(null); }
   }
 
-  async function loadSeason(s: Season, currentUserId: string, currentMembers = members) {
+  async function loadSeason(s: Season, currentUserId: string, currentMembers = members, groupId?: string) {
     const uid = currentUserId || session?.user?.id;
     if (!uid) return;
 
@@ -144,11 +158,29 @@ export default function Home() {
     if (c.data) {
       setDiasEntreno(c.data.dias_carrera_semana + c.data.dias_fuerza_semana);
       setImporteDia(c.data.importe_propuesto || c.data.importe_dia || 5);
+      
+      // Comprobar si el usuario actual tiene una solicitud de revocación pendiente
+      const myRev = await supabase.from('solicitudes_revocacion')
+        .select('*')
+        .eq('challenge_id', c.data.id)
+        .eq('user_id', uid)
+        .eq('estado', 'pendiente')
+        .maybeSingle();
+      setMyRevocation(myRev.data);
+    } else {
+      setMyRevocation(null);
     }
     
     // Retos pendientes de validar para el Admin
     const pc = await supabase.from('challenges').select('*').eq('season_id', s.id).eq('estado_importe', 'pendiente_aprobacion');
     setPendingChallenges((pc.data || []).map(item => ({ ...item, profile: currentMembers.find(m => m.user_id === item.user_id)?.profile })));
+
+    // Revocaciones pendientes de validar para el Admin
+    const activeGroupId = groupId || group?.id;
+    if (activeGroupId) {
+      const pr = await supabase.from('solicitudes_revocacion').select('*').eq('group_id', activeGroupId).eq('estado', 'pendiente');
+      setPendingRevocations((pr.data || []).map(item => ({ ...item, profile: currentMembers.find(m => m.user_id === item.user_id)?.profile })));
+    }
 
     const w = await supabase.from('workouts').select('*').eq('season_id', s.id).order('fecha', { ascending: false });
     setWorkouts((w.data || []).map((x: any) => ({ ...x, profile: currentMembers.find(m => m.user_id === x.user_id)?.profile })));
@@ -191,11 +223,9 @@ export default function Home() {
     if (!nuevoNombreGrupo.trim()) { setMsg('Escribe un nombre para el grupo.'); return; }
     setMsg('Creando grupo...');
     
-    // Llamada a la función RPC segura para crear grupo y asignar creador como Admin
     const { data, error } = await supabase.rpc('handle_create_group', { nombre_grupo: nuevoNombreGrupo.trim() });
     
     if (error) {
-      // Intento alternativo en caso de no tener RPC
       const res = await supabase.from('groups').insert({ nombre: nuevoNombreGrupo.trim(), created_by: session.user.id }).select().single();
       if (res.error) { setMsg('Error al crear grupo: ' + res.error.message); return; }
       await supabase.from('group_members').insert({ group_id: res.data.id, user_id: session.user.id, rol: 'admin' });
@@ -280,6 +310,30 @@ export default function Home() {
     }
   }
 
+  async function solicitarRevocacion(e: React.FormEvent) {
+    e.preventDefault();
+    if (!motivoRevocacion.trim() || !challenge || !group) return;
+
+    setMsg('Enviando solicitud de cancelación...');
+    const { error } = await supabase.from('solicitudes_revocacion').insert([
+      {
+        user_id: session.user.id,
+        group_id: group.id,
+        challenge_id: challenge.id,
+        motivo: motivoRevocacion.trim(),
+      },
+    ]);
+
+    if (error) {
+      setMsg('Error al solicitar la cancelación: ' + error.message);
+    } else {
+      setMsg('Solicitud de cancelación enviada al administrador.');
+      setMotivoRevocacion('');
+      setMostrarModalRevocacion(false);
+      await loadSeason(season!, session.user.id);
+    }
+  }
+
   async function responderPropuestaImporte(c: Challenge, aprobar: boolean) {
     const payload = aprobar 
       ? { importe_dia: c.importe_propuesto, importe_propuesto: null, estado_importe: 'aprobado' }
@@ -291,6 +345,25 @@ export default function Home() {
       setMsg(aprobar ? 'Importe aprobado.' : 'Propuesta rechazada.');
       await loadSeason(season!, session.user.id);
     }
+  }
+
+  async function responderSolicitudRevocacion(solicitud: SolicitudRevocacion, aprobar: boolean) {
+    if (aprobar) {
+      // Eliminar el reto para liberar al usuario
+      const { error: errChallenge } = await supabase.from('challenges').delete().eq('id', solicitud.challenge_id);
+      if (errChallenge) {
+        setMsg('Error al eliminar el reto: ' + errChallenge.message);
+        return;
+      }
+      // Marcar la solicitud como aprobada
+      await supabase.from('solicitudes_revocacion').update({ estado: 'aprobada' }).eq('id', solicitud.id);
+      setMsg('Revocación aprobada. El reto ha sido cancelado.');
+    } else {
+      // Marcar como rechazada
+      await supabase.from('solicitudes_revocacion').update({ estado: 'rechazada' }).eq('id', solicitud.id);
+      setMsg('Solicitud de revocación rechazada.');
+    }
+    await loadSeason(season!, session.user.id);
   }
 
   async function uploadWorkout() {
@@ -343,7 +416,7 @@ export default function Home() {
   const totalGrupoDeuda = useMemo(() => debts.reduce((a, d) => a + Number(d.importe_pendiente), 0), [debts]);
   const myWorkouts = workouts.filter(w => w.user_id === session?.user?.id);
   const pendingWorkouts = workouts.filter(w => w.estado === 'pendiente');
-  const totalPendientesAdmin = pendingWorkouts.length + pendingChallenges.length;
+  const totalPendientesAdmin = pendingWorkouts.length + pendingChallenges.length + pendingRevocations.length;
 
   if (loading) return <div className="center"><div className="spinner" />Cargando…</div>;
   if (!session) return <AuthSection login={login} setLogin={setLogin} email={email} setEmail={setEmail} password={password} setPassword={setPassword} nombre={nombre} setNombre={setNombre} submit={handleAuth} msg={msg} me />;
@@ -403,12 +476,56 @@ export default function Home() {
               <button onClick={saveChallenge}>Guardar reto</button>
             </div>
           </CardView>
+          
           <CardView title="Estado del Reto Actual">
             <p><b>Temporada activa:</b> {season ? season.nombre : 'Ninguna'}</p>
             {season && <p><b>Período:</b> {formatDate(season.fecha_inicio)} al {formatDate(season.fecha_fin)}</p>}
             <p><b>Días fijados:</b> {challenge ? `${challenge.dias_carrera_semana + challenge.dias_fuerza_semana} días/semana` : 'Sin configurar'}</p>
             <p><b>Sanción por día fallado:</b> {money(challenge?.importe_dia || 5)}</p>
+
+            {challenge && (
+              <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid #333' }}>
+                {myRevocation ? (
+                  <div style={{ background: '#332700', color: '#ffcc00', padding: '10px', borderRadius: '4px', fontSize: '0.85rem' }}>
+                    ⏳ <b>Solicitud Pendiente:</b> Has pedido cancelar este reto. Motivo: <em>"{myRevocation.motivo}"</em>.
+                  </div>
+                ) : (
+                  <button className="danger" onClick={() => setMostrarModalRevocacion(true)}>
+                    Solicitar Revocación / Cancelar Reto
+                  </button>
+                )}
+              </div>
+            )}
           </CardView>
+
+          {mostrarModalRevocacion && (
+            <div className="modal">
+              <div className="modalbox">
+                <h2>Solicitar Revocación de Reto</h2>
+                <p style={{ fontSize: '0.85rem', color: '#aaa', marginBottom: '1rem' }}>
+                  Indica al administrador el motivo por el cual necesitas cancelar tu reto actual.
+                </p>
+                <form onSubmit={solicitarRevocacion}>
+                  <textarea
+                    value={motivoRevocacion}
+                    onChange={e => setMotivoRevocacion(e.target.value)}
+                    placeholder="Ejemplo: Lesión muscular, motivo personal..."
+                    rows={4}
+                    required
+                    style={{ width: '100%', padding: '8px', marginBottom: '1rem' }}
+                  />
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                    <button type="button" className="ghost" onClick={() => setMostrarModalRevocacion(false)}>
+                      Cancelar
+                    </button>
+                    <button type="submit" className="danger">
+                      Enviar Solicitud
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -437,11 +554,13 @@ export default function Home() {
         <AdminSection 
           workouts={pendingWorkouts} 
           pendingChallenges={pendingChallenges}
+          pendingRevocations={pendingRevocations}
           validate={validateWorkout} 
           reject={reject} 
           setReject={setReject} 
           onDelete={deleteWorkout} 
           responderPropuesta={responderPropuestaImporte}
+          responderRevocacion={responderSolicitudRevocacion}
         />
       )}
     </main>
@@ -799,9 +918,26 @@ function DeudasSection({ debts, members, total }: any) {
   );
 }
 
-function AdminSection({ workouts, pendingChallenges, validate, reject, setReject, onDelete, responderPropuesta }: any) {
+function AdminSection({ workouts, pendingChallenges, pendingRevocations, validate, reject, setReject, onDelete, responderPropuesta, responderRevocacion }: any) {
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <CardView title={`Solicitudes de Cancelación/Revocación (${pendingRevocations?.length || 0})`}>
+        <div className="list">
+          {pendingRevocations?.length ? pendingRevocations.map((sol: SolicitudRevocacion) => (
+            <div key={sol.id} style={{ borderBottom: '1px solid #333', padding: '10px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <b>{sol.profile?.nombre || 'Usuario'}</b>
+                <div><small>Motivo: <em>"{sol.motivo}"</em></small></div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={() => responderRevocacion(sol, true)}>Aprobar cancelación</button>
+                <button className="danger" onClick={() => responderRevocacion(sol, false)}>Rechazar</button>
+              </div>
+            </div>
+          )) : <p className="muted">No hay solicitudes de cancelación pendientes.</p>}
+        </div>
+      </CardView>
+
       <CardView title={`Propuestas de cambio de importe (${pendingChallenges.length})`}>
         <div className="list">
           {pendingChallenges.length ? pendingChallenges.map((c: Challenge) => (
