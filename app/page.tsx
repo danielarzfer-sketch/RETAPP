@@ -369,7 +369,7 @@ export default function Home() {
       ? (workoutForm.tipoPersonalizado.trim() || 'Otro') 
       : workoutForm.tipo;
 
-    const min = workoutForm.tipo === 'carrera' ? 40 : (workoutForm.tipo === 'fuerza' ? 50 : 20);
+    const min = workoutForm.tipo === 'carrera' ? 40 : (workoutForm.tipo === 'fuerza' ? 50 : 15);
     if (Number(workoutForm.duracion) < min) { setMsg(`Duración mínima: ${min} min.`); return; }
 
     const ext = workoutForm.file.name.split('.').pop() || 'jpg';
@@ -395,6 +395,12 @@ export default function Home() {
   }
 
   async function validateWorkout(w: Workout, status: 'aprobado' | 'rechazado', reason = '') {
+    // Evitar que un admin valide su propio entrenamiento
+    if (w.user_id === session.user.id) {
+      setMsg('No puedes validar tu propio entrenamiento. Debe revisarlo otro administrador.');
+      return;
+    }
+
     const r = await supabase.from('workouts').update({ 
       estado: status, 
       motivo_rechazo: status === 'rechazado' ? reason : null, 
@@ -578,6 +584,7 @@ export default function Home() {
           onDelete={deleteWorkout} 
           responderPropuesta={responderPropuestaImporte}
           responderRevocacion={responderSolicitudRevocacion}
+          currentUserId={session.user.id}
         />
       )}
     </main>
@@ -813,8 +820,9 @@ function GrupoSection({ group, members, isAdmin, promoteAdmin, nuevoNombreGrupo,
 
 function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
   const getIcon = (tipo: string) => {
-    if (tipo === 'carrera') return '🏃';
-    if (tipo === 'fuerza') return '💪';
+    const t = tipo.toLowerCase();
+    if (t.includes('carrera')) return '🏃';
+    if (t.includes('fuerza')) return '💪';
     return '🏋️';
   };
 
@@ -847,7 +855,7 @@ function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
               <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.85rem' }}>Escribe tu tipo de entrenamiento</label>
               <input 
                 type="text" 
-                placeholder="Ej. Pádel, Natación, Ciclismo..." 
+                placeholder="Ej. Body Combat, Pádel, Natación..." 
                 value={form.tipoPersonalizado} 
                 onChange={e => setForm({ ...form, tipoPersonalizado: e.target.value })} 
                 style={{ width: '100%', padding: '8px' }}
@@ -935,7 +943,7 @@ function DeudasSection({ debts, members, total }: any) {
   );
 }
 
-function AdminSection({ workouts, pendingChallenges, pendingRevocations, validate, reject, setReject, onDelete, responderPropuesta, responderRevocacion }: any) {
+function AdminSection({ workouts, pendingChallenges, pendingRevocations, validate, reject, setReject, onDelete, responderPropuesta, responderRevocacion, currentUserId }: any) {
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <CardView title={`Solicitudes de Cancelación/Revocación (${pendingRevocations?.length || 0})`}>
@@ -974,41 +982,46 @@ function AdminSection({ workouts, pendingChallenges, pendingRevocations, validat
 
       <CardView title={`Entrenamientos pendientes de validación (${workouts.length})`}>
         <div className="list">
-          {workouts.length ? workouts.map((w: Workout) => (
-            <div className="adminrow" key={w.id} style={{ borderBottom: '1px solid #333', padding: '10px 0' }}>
-              <div>
-                <b>{w.profile?.nombre}</b>
-                <div><small>{w.tipo.toUpperCase()} · {w.duracion_minutos} min · {formatDate(w.fecha)}</small></div>
-                <button 
-                  className="ghost"
-                  style={{ fontSize: '0.85rem', padding: '4px 8px', marginTop: '6px', cursor: 'pointer' }}
-                  onClick={async () => {
-                    try {
-                      const publicUrl = supabase.storage.from('capturas').getPublicUrl(w.captura_url).data.publicUrl;
-                      const { data } = await supabase.storage.from('capturas').createSignedUrl(w.captura_url, 600);
-                      
-                      const targetUrl = data?.signedUrl || publicUrl;
-
-                      if (targetUrl) {
-                        window.open(targetUrl, '_blank', 'noopener,noreferrer');
-                      } else {
-                        alert('No se pudo obtener la imagen.');
+          {workouts.length ? workouts.map((w: Workout) => {
+            const isOwnWorkout = w.user_id === currentUserId;
+            return (
+              <div className="adminrow" key={w.id} style={{ borderBottom: '1px solid #333', padding: '10px 0' }}>
+                <div>
+                  <b>{w.profile?.nombre} {isOwnWorkout && '(Tuyo)'}</b>
+                  <div><small>{w.tipo.toUpperCase()} · {w.duracion_minutos} min · {formatDate(w.fecha)}</small></div>
+                  <button 
+                    className="ghost"
+                    style={{ fontSize: '0.85rem', padding: '4px 8px', marginTop: '6px', cursor: 'pointer' }}
+                    onClick={async () => {
+                      try {
+                        const publicUrl = supabase.storage.from('capturas').getPublicUrl(w.captura_url).data.publicUrl;
+                        const { data } = await supabase.storage.from('capturas').createSignedUrl(w.captura_url, 600);
+                        const targetUrl = data?.signedUrl || publicUrl;
+                        if (targetUrl) window.open(targetUrl, '_blank', 'noopener,noreferrer');
+                      } catch (err) {
+                        console.error('Error al abrir la imagen:', err);
                       }
-                    } catch (err) {
-                      console.error('Error al abrir la imagen:', err);
-                    }
-                  }}
-                >
-                  🔍 Ver comprobante adjunto
-                </button>
+                    }}
+                  >
+                    🔍 Ver comprobante adjunto
+                  </button>
+                </div>
+                <div className="actions" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                  {isOwnWorkout ? (
+                    <span style={{ fontSize: '0.80rem', color: '#ffcc00', alignSelf: 'center' }}>
+                      ⏳ Esperando a otro admin
+                    </span>
+                  ) : (
+                    <>
+                      <button onClick={() => validate(w, 'aprobado')}>Aprobar</button>
+                      <button className="danger" onClick={() => setReject({ id: w.id, reason: '' })}>Rechazar</button>
+                    </>
+                  )}
+                  <button className="ghost" onClick={() => onDelete(w)}>Eliminar</button>
+                </div>
               </div>
-              <div className="actions" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
-                <button onClick={() => validate(w, 'aprobado')}>Aprobar</button>
-                <button className="danger" onClick={() => setReject({ id: w.id, reason: '' })}>Rechazar</button>
-                <button className="ghost" onClick={() => onDelete(w)}>Eliminar</button>
-              </div>
-            </div>
-          )) : <p className="muted">No hay publicaciones pendientes de revisión.</p>}
+            );
+          }) : <p className="muted">No hay publicaciones pendientes de revisión.</p>}
         </div>
       </CardView>
 
