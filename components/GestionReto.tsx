@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../supabaseClient'; // Asegúrate de que esta ruta apunta a tu cliente de Supabase
+import { supabase } from '../supabaseClient'; 
 
 export default function GestionReto({ userId, groupId }) {
   const [retoActivo, setRetoActivo] = useState(null);
