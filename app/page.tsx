@@ -20,8 +20,22 @@ const getMondayOfCurrentWeek = () => {
   const d = new Date();
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  const monday = new Date(d.setDate(diff));
+  const monday = new Date(d);
+  monday.setDate(diff);
   return monday.toISOString().split('T')[0];
+};
+
+// Obtener el punto de corte (martes de la semana actual a las 00:00:00)
+// Si hoy es lunes, el último martes fue el de la semana anterior.
+const getLastTuesdayCutoff = () => {
+  const d = new Date();
+  const day = d.getDay(); // 0 = Dom, 1 = Lun, 2 = Mar...
+  let diffDays = day - 2;
+  if (diffDays < 0) diffDays += 7; // Si es lunes (1), tira 6 días atrás para pillar el martes pasado
+  const tuesday = new Date(d);
+  tuesday.setDate(d.getDate() - diffDays);
+  tuesday.setHours(0, 0, 0, 0);
+  return tuesday.toISOString().split('T')[0];
 };
 
 export default function Home() {
@@ -113,11 +127,11 @@ export default function Home() {
     const w = await supabase.from('workouts').select('*').eq('season_id', s.id).order('fecha', { ascending: false });
     setWorkouts((w.data || []).map((x: any) => ({ ...x, profile: currentMembers.find(m => m.user_id === x.user_id)?.profile })));
     
-    const currentMonday = getMondayOfCurrentWeek();
+    const tuesdayCutoff = getLastTuesdayCutoff();
     const d = await supabase.from('v_deuda_pendiente')
       .select('*')
       .eq('season_id', s.id)
-      .lt('semana_inicio', currentMonday)
+      .lt('semana_inicio', tuesdayCutoff)
       .order('semana_inicio', { ascending: false });
       
     setDebts(d.data || []);
@@ -160,19 +174,24 @@ export default function Home() {
   async function deleteWorkout(workout: Workout) {
     if (!confirm('¿Seguro que quieres eliminar este entrenamiento?')) return;
     
+    setMsg('Eliminando entrenamiento...');
     try {
       if (workout.captura_url) {
-        await supabase.storage.from('capturas').remove([workout.captura_url]);
+        // Tratar de eliminar en el storage sin bloquear si falla
+        await supabase.storage.from('capturas').remove([workout.captura_url]).catch(() => null);
       }
-      const r = await supabase.from('workouts').delete().eq('id', workout.id);
-      if (r.error) {
-        setMsg(r.error.message);
+      
+      const { error } = await supabase.from('workouts').delete().eq('id', workout.id);
+      if (error) {
+        setMsg('Error al eliminar en base de datos: ' + error.message);
       } else {
         setMsg('Entrenamiento eliminado correctamente.');
-        if (season) await loadSeason(season, session.user.id);
+        if (season) {
+          await loadSeason(season, session.user.id);
+        }
       }
     } catch (e: any) {
-      setMsg('Error al eliminar: ' + e.message);
+      setMsg('Error inesperado: ' + e.message);
     }
   }
 
@@ -264,7 +283,7 @@ export default function Home() {
 
       {msg && <NoticeView text={msg} />}
 
-      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} />}
+      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} debts={debts} userId={session.user.id} />}
       
       {tab === 'reto' && (
         <section className="grid2">
@@ -298,9 +317,11 @@ export default function Home() {
 
 // ---------------- SUB-COMPONENTES ----------------
 
-function InicioSection({ profile, season, challenge, total, myWorkouts, workouts }: any) {
+function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, debts, userId }: any) {
   const currentMonday = getMondayOfCurrentWeek();
-  const currentMonthStr = new Date().toISOString().slice(0, 7);
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
 
   // 1. Entrenamientos aprobados esta semana
   const approvedThisWeek = myWorkouts.filter((w: Workout) => w.estado === 'aprobado' && w.fecha >= currentMonday).length;
@@ -312,10 +333,18 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
   // 3. Entrenamientos pendientes de validación en el grupo
   const pendingGroupTotal = workouts.filter((w: Workout) => w.estado === 'pendiente').length;
 
-  // 4. Entrenamientos del mes actual
-  const totalThisMonth = myWorkouts.filter((w: Workout) => w.estado === 'aprobado' && w.fecha.startsWith(currentMonthStr)).length;
+  // 4. Entrenamientos fallidos acumulados del usuario (semanas pasadas)
+  const myDebts = debts.filter((d: Debt) => d.user_id === userId);
+  const failedWorkoutsCount = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.dias_totales_fallados || 0), 0);
 
-  // 5. Entrenamientos totales aprobados
+  // 5. Entrenamientos del mes actual (Comparando objeto fecha real para evitar desfasajes)
+  const totalThisMonth = myWorkouts.filter((w: Workout) => {
+    if (w.estado !== 'aprobado') return false;
+    const d = new Date(w.fecha + 'T00:00:00');
+    return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
+  }).length;
+
+  // 6. Entrenamientos totales aprobados
   const totalAllTime = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
 
   return (
@@ -330,24 +359,29 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
       </section>
 
       <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
-        <StatView n={approvedThisWeek} t="Aprobados esta semana" />
-        <StatView n={pendingThisWeek} t="Te faltan esta semana" />
-        <StatView n={pendingGroupTotal} t="Pendientes de validación" />
-        <StatView n={totalThisMonth} t="Totales este mes" />
-        <StatView n={totalAllTime} t="Totales históricos" />
+        <StatView n={approvedThisWeek} t="Aprobados esta semana" bg="#d4edda" color="#155724" />
+        <StatView n={pendingThisWeek} t="Restantes esta semana" bg="#fff3cd" color="#856404" />
+        <StatView n={pendingGroupTotal} t="Pendientes de validación" bg="#cce5ff" color="#004085" />
+        <StatView n={failedWorkoutsCount} t="Entrenamientos fallidos (pasados)" bg="#f8d7da" color="#721c24" />
+        <StatView n={totalThisMonth} t="Totales este mes" bg="#e2e3e5" color="#383d41" />
+        <StatView n={totalAllTime} t="Totales históricos" bg="#e2e3e5" color="#383d41" />
       </div>
     </>
   );
 }
 
-function StatView({ n, t }: { n: any; t: string }) {
-  return <div className="stat" style={{ padding: '1rem', border: '1px solid #333', borderRadius: '8px' }}><strong>{n}</strong><span>{t}</span></div>;
+function StatView({ n, t, bg, color }: { n: any; t: string; bg?: string; color?: string }) {
+  return (
+    <div className="stat" style={{ padding: '1rem', border: '1px solid rgba(0,0,0,0.1)', borderRadius: '8px', backgroundColor: bg || '#222', color: color || '#fff' }}>
+      <strong style={{ fontSize: '1.8rem', display: 'block' }}>{n}</strong>
+      <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>{t}</span>
+    </div>
+  );
 }
 
 function ComparativasSection({ season, members, workouts, currentSeasonWorkouts }: any) {
   const [selectedWeekStart, setSelectedWeekStart] = useState<string>(getMondayOfCurrentWeek());
 
-  // Generar lista de semanas de la temporada activa
   const seasonWeeks = useMemo(() => {
     if (!season) return [];
     const weeks: { label: string; start: string; end: string }[] = [];
@@ -397,7 +431,7 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts 
         w.fecha <= activeWeek.end
       );
 
-      const daysOfWeek = [0, 1, 2, 3, 4, 5, 6]; // L, M, X, J, V, S, D
+      const daysOfWeek = [0, 1, 2, 3, 4, 5, 6];
       const attendance = daysOfWeek.map((dayIdx) => {
         return userWorkouts.some((w: Workout) => {
           const d = new Date(w.fecha + 'T00:00:00');
