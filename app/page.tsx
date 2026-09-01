@@ -15,13 +15,13 @@ const supabase = createClient();
 const money = (n: number) => `${Number(n || 0).toFixed(2)} €`;
 const formatDate = (s: string) => new Date(s + 'T00:00:00').toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
-// Ayudante para obtener el lunes de la semana actual
+// Obtener el lunes de la semana actual en formato YYYY-MM-DD local
 const getMondayOfCurrentWeek = () => {
   const d = new Date();
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   const monday = new Date(d.setDate(diff));
-  return monday.toISOString().slice(0, 10);
+  return monday.toISOString().split('T')[0];
 };
 
 export default function Home() {
@@ -113,7 +113,6 @@ export default function Home() {
     const w = await supabase.from('workouts').select('*').eq('season_id', s.id).order('fecha', { ascending: false });
     setWorkouts((w.data || []).map((x: any) => ({ ...x, profile: currentMembers.find(m => m.user_id === x.user_id)?.profile })));
     
-    // Filtrar deudas para que NO incluyan la semana en curso (solo semanas con fecha_inicio estrictamente menor al lunes actual)
     const currentMonday = getMondayOfCurrentWeek();
     const d = await supabase.from('v_deuda_pendiente')
       .select('*')
@@ -148,18 +147,32 @@ export default function Home() {
     }
   }
 
+  async function promoteAdmin(targetUserId: string) {
+    if (!group) return;
+    const r = await supabase.from('group_members').update({ rol: 'admin' }).eq('group_id', group.id).eq('user_id', targetUserId);
+    if (r.error) setMsg('Error: ' + r.error.message);
+    else {
+      setMsg('Rol actualizado a administrador.');
+      await loadGroup(group, session.user.id);
+    }
+  }
+
   async function deleteWorkout(workout: Workout) {
     if (!confirm('¿Seguro que quieres eliminar este entrenamiento?')) return;
     
-    if (workout.captura_url) {
-      await supabase.storage.from('capturas').remove([workout.captura_url]);
-    }
-    
-    const r = await supabase.from('workouts').delete().eq('id', workout.id);
-    if (r.error) setMsg(r.error.message);
-    else {
-      setMsg('Entrenamiento eliminado.');
-      await loadSeason(season!, session.user.id);
+    try {
+      if (workout.captura_url) {
+        await supabase.storage.from('capturas').remove([workout.captura_url]);
+      }
+      const r = await supabase.from('workouts').delete().eq('id', workout.id);
+      if (r.error) {
+        setMsg(r.error.message);
+      } else {
+        setMsg('Entrenamiento eliminado correctamente.');
+        if (season) await loadSeason(season, session.user.id);
+      }
+    } catch (e: any) {
+      setMsg('Error al eliminar: ' + e.message);
     }
   }
 
@@ -222,7 +235,7 @@ export default function Home() {
   const pendingWorkouts = workouts.filter(w => w.estado === 'pendiente');
 
   if (loading) return <div className="center"><div className="spinner" />Cargando…</div>;
-  if (!session) return <AuthSection login={login} setLogin={setLogin} email={email} setEmail={setEmail} password={password} setPassword={setPassword} nombre={nombre} setNombre={setNombre} submit={handleAuth} msg={msg} />;
+  if (!session) return <AuthSection login={login} setLogin={setLogin} email={email} setEmail={setEmail} password={password} setPassword={setPassword} nombre={nombre} setNombre={setNombre} submit={handleAuth} msg={msg} me />;
 
   return (
     <main className="shell">
@@ -251,7 +264,7 @@ export default function Home() {
 
       {msg && <NoticeView text={msg} />}
 
-      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} members={members} />}
+      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} />}
       
       {tab === 'reto' && (
         <section className="grid2">
@@ -274,9 +287,9 @@ export default function Home() {
       
       {tab === 'deudas' && <DeudasSection debts={debts} members={members} total={totalGrupoDeuda} />}
       
-      {tab === 'comparativa' && <ComparativasSection members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} />}
+      {tab === 'comparativa' && <ComparativasSection season={season} members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} />}
 
-      {tab === 'grupo' && <GrupoSection group={group!} members={members} isAdmin={isAdmin} promoteAdmin={() => {}} />}
+      {tab === 'grupo' && <GrupoSection group={group!} members={members} isAdmin={isAdmin} promoteAdmin={promoteAdmin} />}
       
       {tab === 'admin' && isAdmin && <AdminSection workouts={pendingWorkouts} validate={validateWorkout} reject={reject} setReject={setReject} onDelete={deleteWorkout} />}
     </main>
@@ -285,26 +298,25 @@ export default function Home() {
 
 // ---------------- SUB-COMPONENTES ----------------
 
-function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, members }: any) {
+function InicioSection({ profile, season, challenge, total, myWorkouts, workouts }: any) {
   const currentMonday = getMondayOfCurrentWeek();
   const currentMonthStr = new Date().toISOString().slice(0, 7);
 
-  // 1. Entrenamientos aprobados esta semana (del usuario actual)
+  // 1. Entrenamientos aprobados esta semana
   const approvedThisWeek = myWorkouts.filter((w: Workout) => w.estado === 'aprobado' && w.fecha >= currentMonday).length;
   
-  // 2. Entrenamientos pendientes esta semana (del usuario actual)
-  const pendingThisWeek = myWorkouts.filter((w: Workout) => w.estado === 'pendiente' && w.fecha >= currentMonday).length;
+  // 2. Entrenamientos pendientes por cumplir esta semana (Reto objetivo - aprobados)
+  const targetDays = challenge ? (challenge.dias_carrera_semana + challenge.dias_fuerza_semana) : 0;
+  const pendingThisWeek = Math.max(0, targetDays - approvedThisWeek);
   
-  // 3. Entrenamientos pendientes de aprobación (de TODO el grupo)
+  // 3. Entrenamientos pendientes de validación en el grupo
   const pendingGroupTotal = workouts.filter((w: Workout) => w.estado === 'pendiente').length;
 
-  // 4. Entrenamientos totales del mes (del usuario actual)
+  // 4. Entrenamientos del mes actual
   const totalThisMonth = myWorkouts.filter((w: Workout) => w.estado === 'aprobado' && w.fecha.startsWith(currentMonthStr)).length;
 
-  // 5. Entrenamientos totales (del usuario actual)
+  // 5. Entrenamientos totales aprobados
   const totalAllTime = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
-
-  const totalDias = challenge ? challenge.dias_carrera_semana + challenge.dias_fuerza_semana : 0;
 
   return (
     <>
@@ -312,15 +324,15 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
         <div>
           <span className="eyebrow">HOLA, {profile?.nombre?.toUpperCase()}</span>
           <h1>{season ? season.nombre : 'Configura tu temporada'}</h1>
-          <p>{challenge ? `${totalDias} días de entrenamiento a la semana.` : 'Todavía no has configurado tu reto.'}</p>
+          <p>{challenge ? `${targetDays} días de entrenamiento a la semana.` : 'Todavía no has configurado tu reto.'}</p>
         </div>
         <div className="debtBig"><span>Deuda global</span><strong>{money(total)}</strong></div>
       </section>
 
       <div className="stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
         <StatView n={approvedThisWeek} t="Aprobados esta semana" />
-        <StatView n={pendingThisWeek} t="Tus pendientes (semana)" />
-        <StatView n={pendingGroupTotal} t="Pendientes de aprobación (Grupo)" />
+        <StatView n={pendingThisWeek} t="Te faltan esta semana" />
+        <StatView n={pendingGroupTotal} t="Pendientes de validación" />
         <StatView n={totalThisMonth} t="Totales este mes" />
         <StatView n={totalAllTime} t="Totales históricos" />
       </div>
@@ -330,6 +342,146 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
 
 function StatView({ n, t }: { n: any; t: string }) {
   return <div className="stat" style={{ padding: '1rem', border: '1px solid #333', borderRadius: '8px' }}><strong>{n}</strong><span>{t}</span></div>;
+}
+
+function ComparativasSection({ season, members, workouts, currentSeasonWorkouts }: any) {
+  const [selectedWeekStart, setSelectedWeekStart] = useState<string>(getMondayOfCurrentWeek());
+
+  // Generar lista de semanas de la temporada activa
+  const seasonWeeks = useMemo(() => {
+    if (!season) return [];
+    const weeks: { label: string; start: string; end: string }[] = [];
+    let current = new Date(season.fecha_inicio + 'T00:00:00');
+    const endDate = new Date(season.fecha_fin + 'T00:00:00');
+
+    while (current <= endDate) {
+      const startStr = current.toISOString().split('T')[0];
+      const endTemp = new Date(current);
+      endTemp.setDate(endTemp.getDate() + 6);
+      const endStr = endTemp.toISOString().split('T')[0];
+
+      weeks.push({
+        label: `Semana del ${formatDate(startStr)} al ${formatDate(endStr)}`,
+        start: startStr,
+        end: endStr
+      });
+
+      current.setDate(current.getDate() + 7);
+    }
+    return weeks;
+  }, [season]);
+
+  const chartData = useMemo(() => {
+    const months: Record<string, any> = {};
+    workouts.forEach((w: Workout) => {
+      const date = new Date(w.fecha);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      if (!months[monthKey]) {
+        months[monthKey] = { month: monthKey };
+        members.forEach((m: Member) => { months[monthKey][m.profile?.nombre || 'Desconocido'] = 0; });
+      }
+      const userName = w.profile?.nombre || 'Desconocido';
+      months[monthKey][userName] = (months[monthKey][userName] || 0) + 1;
+    });
+    return Object.values(months).sort((a, b) => a.month.localeCompare(b.month));
+  }, [workouts, members]);
+
+  const weeklyData = useMemo(() => {
+    const activeWeek = seasonWeeks.find(w => w.start === selectedWeekStart) || { start: selectedWeekStart, end: selectedWeekStart };
+    
+    return members.map((m: Member) => {
+      const userWorkouts = currentSeasonWorkouts.filter((w: Workout) => 
+        w.user_id === m.user_id && 
+        w.estado === 'aprobado' && 
+        w.fecha >= activeWeek.start && 
+        w.fecha <= activeWeek.end
+      );
+
+      const daysOfWeek = [0, 1, 2, 3, 4, 5, 6]; // L, M, X, J, V, S, D
+      const attendance = daysOfWeek.map((dayIdx) => {
+        return userWorkouts.some((w: Workout) => {
+          const d = new Date(w.fecha + 'T00:00:00');
+          const day = d.getDay();
+          const adjustedDay = day === 0 ? 6 : day - 1;
+          return adjustedDay === dayIdx;
+        });
+      });
+      return { name: m.profile?.nombre, attendance };
+    });
+  }, [members, currentSeasonWorkouts, selectedWeekStart, seasonWeeks]);
+
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <CardView title="Evolución Mensual de Entrenamientos">
+        <div style={{ width: '100%', height: 300 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" />
+              <YAxis allowDecimals={false} />
+              <Tooltip />
+              <Legend />
+              {members.map((m: Member, idx: number) => (
+                <Line key={m.user_id} type="monotone" dataKey={m.profile?.nombre || 'Usuario'} stroke={`hsl(${idx * 137.5 % 360}, 70%, 50%)`} strokeWidth={2} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </CardView>
+
+      <CardView title="Asistencia Semanal por Día">
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem' }}>Seleccionar Semana:</label>
+          <select value={selectedWeekStart} onChange={e => setSelectedWeekStart(e.target.value)} style={{ width: '100%', padding: '8px' }}>
+            {seasonWeeks.map(w => (
+              <option key={w.start} value={w.start}>{w.label}</option>
+            ))}
+          </select>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>Miembro</th>
+              <th>L</th><th>M</th><th>X</th><th>J</th><th>V</th><th>S</th><th>D</th>
+            </tr>
+          </thead>
+          <tbody>
+            {weeklyData.map((row: any, i: number) => (
+              <tr key={i} style={{ borderTop: '1px solid #333' }}>
+                <td style={{ textAlign: 'left', padding: '8px 0' }}><b>{row.name}</b></td>
+                {row.attendance.map((done: boolean, idx: number) => (
+                  <td key={idx}>{done ? '✅' : '❌'}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardView>
+    </section>
+  );
+}
+
+function GrupoSection({ group, members, isAdmin, promoteAdmin }: any) {
+  return (
+    <section className="grid2">
+      <CardView title="Tu grupo">
+        <p className="code">{group.codigo_invitacion}</p>
+        <p className="muted">Código de invitación al grupo.</p>
+      </CardView>
+      <CardView title="Miembros y Roles">
+        <div className="list">
+          {members.map((m: Member) => (
+            <div className="row" key={m.user_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 0' }}>
+              <span>👤 {m.profile?.nombre} <b>({m.rol})</b></span>
+              {isAdmin && m.rol !== 'admin' && (
+                <button className="ghost" onClick={() => promoteAdmin(m.user_id)}>Hacer Admin</button>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardView>
+    </section>
+  );
 }
 
 function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
@@ -430,103 +582,6 @@ function AdminSection({ workouts, validate, reject, setReject, onDelete }: any) 
           </div>
         </div>
       )}
-    </section>
-  );
-}
-
-function ComparativasSection({ members, workouts, currentSeasonWorkouts }: any) {
-  const chartData = useMemo(() => {
-    const months: Record<string, any> = {};
-    workouts.forEach((w: Workout) => {
-      const date = new Date(w.fecha);
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      if (!months[monthKey]) {
-        months[monthKey] = { month: monthKey };
-        members.forEach((m: Member) => { months[monthKey][m.profile?.nombre || 'Desconocido'] = 0; });
-      }
-      const userName = w.profile?.nombre || 'Desconocido';
-      months[monthKey][userName] = (months[monthKey][userName] || 0) + 1;
-    });
-    return Object.values(months).sort((a, b) => a.month.localeCompare(b.month));
-  }, [workouts, members]);
-
-  const weeklyData = useMemo(() => {
-    const daysOfWeek = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
-    return members.map((m: Member) => {
-      const userWorkouts = currentSeasonWorkouts.filter((w: Workout) => w.user_id === m.user_id && w.estado === 'aprobado');
-      const attendance = daysOfWeek.map((_, index) => {
-        return userWorkouts.some((w: Workout) => {
-          const day = new Date(w.fecha).getDay();
-          const adjustedDay = day === 0 ? 6 : day - 1;
-          return adjustedDay === index;
-        });
-      });
-      return { name: m.profile?.nombre, attendance };
-    });
-  }, [members, currentSeasonWorkouts]);
-
-  return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      <CardView title="Evolución Mensual de Entrenamientos">
-        <div style={{ width: '100%', height: 300 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="month" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Legend />
-              {members.map((m: Member, idx: number) => (
-                <Line key={m.user_id} type="monotone" dataKey={m.profile?.nombre || 'Usuario'} stroke={`hsl(${idx * 137.5 % 360}, 70%, 50%)`} strokeWidth={2} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </CardView>
-
-      <CardView title="Asistencia Semanal">
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: 'left' }}>Miembro</th>
-              <th>L</th><th>M</th><th>X</th><th>J</th><th>V</th><th>S</th><th>D</th>
-            </tr>
-          </thead>
-          <tbody>
-            {weeklyData.map((row: any, i: number) => (
-              <tr key={i} style={{ borderTop: '1px solid #333' }}>
-                <td style={{ textAlign: 'left', padding: '8px 0' }}><b>{row.name}</b></td>
-                {row.attendance.map((done: boolean, idx: number) => (
-                  <td key={idx}>{done ? '✅' : '❌'}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </CardView>
-    </section>
-  );
-}
-
-function GrupoSection({ group, members, isAdmin, promoteAdmin }: any) {
-  return (
-    <section className="grid2">
-      <CardView title="Tu grupo">
-        <p className="code">{group.codigo_invitacion}</p>
-        <p className="muted">Código de invitación al grupo.</p>
-      </CardView>
-      <CardView title="Miembros y Roles">
-        <div className="list">
-          {members.map((m: Member) => (
-            <div className="row" key={m.user_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>👤 {m.profile?.nombre} <b>({m.rol})</b></span>
-              {isAdmin && m.rol !== 'admin' && (
-                <button className="ghost" onClick={() => promoteAdmin(m.user_id)}>Hacer Admin</button>
-              )}
-            </div>
-          ))}
-        </div>
-      </CardView>
     </section>
   );
 }
