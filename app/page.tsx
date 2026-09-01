@@ -28,6 +28,16 @@ type SolicitudRevocacion = {
   estado: 'pendiente' | 'aprobada' | 'rechazada';
   profile?: Profile;
 };
+type ManualDebt = {
+  id: string;
+  season_id: string;
+  user_id: string;
+  admin_id: string;
+  importe: number;
+  concepto: string;
+  estado: 'pendiente' | 'aceptada' | 'rechazada';
+  profile?: Profile;
+};
 type Workout = { id: string; season_id: string; user_id: string; tipo: string; fecha: string; duracion_minutos: number; captura_url: string; estado: 'pendiente' | 'aprobado' | 'rechazado'; motivo_rechazo: string | null; profile?: Profile };
 type Debt = { season_id: string; user_id: string; semana_inicio: string; importe_deuda: number; importe_saldado: number; importe_pendiente: number; dias_totales_fallados: number };
 
@@ -67,6 +77,7 @@ export default function Home() {
   const [pendingChallenges, setPendingChallenges] = useState<Challenge[]>([]);
   const [pendingRevocations, setPendingRevocations] = useState<SolicitudRevocacion[]>([]);
   const [myRevocation, setMyRevocation] = useState<SolicitudRevocacion | null>(null);
+  const [manualDebts, setManualDebts] = useState<ManualDebt[]>([]);
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [allGroupWorkouts, setAllGroupWorkouts] = useState<Workout[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
@@ -146,7 +157,7 @@ export default function Home() {
     }
 
     if (s) await loadSeason(s, currentUserId, memberList, g.id);
-    else { setChallenge(null); setWorkouts([]); setDebts([]); setPendingChallenges([]); setPendingRevocations([]); setMyRevocation(null); }
+    else { setChallenge(null); setWorkouts([]); setDebts([]); setManualDebts([]); setPendingChallenges([]); setPendingRevocations([]); setMyRevocation(null); }
   }
 
   async function loadSeason(s: Season, currentUserId: string, currentMembers = members, groupId?: string) {
@@ -178,6 +189,9 @@ export default function Home() {
       const pr = await supabase.from('solicitudes_revocacion').select('*').eq('group_id', activeGroupId).eq('estado', 'pendiente');
       setPendingRevocations((pr.data || []).map(item => ({ ...item, profile: currentMembers.find(m => m.user_id === item.user_id)?.profile })));
     }
+
+    const md = await supabase.from('deudas_manuales').select('*').eq('season_id', s.id);
+    setManualDebts((md.data || []).map((x: any) => ({ ...x, profile: currentMembers.find(m => m.user_id === x.user_id)?.profile })));
 
     const w = await supabase.from('workouts').select('*').eq('season_id', s.id).order('fecha', { ascending: false });
     setWorkouts((w.data || []).map((x: any) => ({ ...x, profile: currentMembers.find(m => m.user_id === x.user_id)?.profile })));
@@ -360,6 +374,39 @@ export default function Home() {
     await loadSeason(season!, session.user.id);
   }
 
+  async function crearDeudaManual(userId: string, importe: number, concepto: string) {
+    if (!season) { setMsg('No hay temporada activa.'); return; }
+    if (!importe || importe <= 0) { setMsg('Introduce un importe válido.'); return; }
+    if (!concepto.trim()) { setMsg('Introduce un concepto para la deuda.'); return; }
+
+    const { error } = await supabase.from('deudas_manuales').insert({
+      season_id: season.id,
+      user_id: userId,
+      admin_id: session.user.id,
+      importe: Number(importe),
+      concepto: concepto.trim(),
+      estado: 'pendiente'
+    });
+
+    if (error) {
+      setMsg('Error al crear deuda manual: ' + error.message);
+    } else {
+      setMsg('Deuda manual creada. Pendiente de validación por el usuario.');
+      await loadSeason(season, session.user.id);
+    }
+  }
+
+  async function responderDeudaManual(deudaId: string, aceptar: boolean) {
+    const nuevoEstado = aceptar ? 'aceptada' : 'rechazada';
+    const { error } = await supabase.from('deudas_manuales').update({ estado: nuevoEstado }).eq('id', deudaId);
+    if (error) {
+      setMsg('Error al actualizar la deuda manual: ' + error.message);
+    } else {
+      setMsg(aceptar ? 'Deuda aceptada correctamente.' : 'Deuda rechazada.');
+      await loadSeason(season!, session.user.id);
+    }
+  }
+
   async function uploadWorkout() {
     setMsg('');
     if (!season) { setMsg('No hay una temporada activa.'); return; }
@@ -412,7 +459,11 @@ export default function Home() {
   }
 
   const isAdmin = !!members.find(m => m.user_id === session?.user?.id && m.rol === 'admin');
-  const totalGrupoDeuda = useMemo(() => debts.reduce((a, d) => a + Number(d.importe_pendiente), 0), [debts]);
+  
+  const acceptedManualDebts = manualDebts.filter(d => d.estado === 'aceptada');
+  const totalManualDebt = acceptedManualDebts.reduce((a, d) => a + Number(d.importe), 0);
+  const totalGrupoDeuda = useMemo(() => debts.reduce((a, d) => a + Number(d.importe_pendiente), 0) + totalManualDebt, [debts, totalManualDebt]);
+
   const myWorkouts = workouts.filter(w => w.user_id === session?.user?.id);
   const pendingWorkouts = workouts.filter(w => w.estado === 'pendiente');
   const totalPendientesAdmin = pendingWorkouts.length + pendingChallenges.length + pendingRevocations.length;
@@ -447,7 +498,7 @@ export default function Home() {
 
       {msg && <NoticeView text={msg} />}
 
-      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} debts={debts} userId={session.user.id} />}
+      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} debts={debts} manualDebts={acceptedManualDebts} userId={session.user.id} />}
       
       {tab === 'reto' && (
         <section className="grid2">
@@ -553,7 +604,18 @@ export default function Home() {
 
       {tab === 'entreno' && <EntrenosSection form={workoutForm} setForm={setWorkoutForm} upload={uploadWorkout} workouts={myWorkouts} onDelete={deleteWorkout} />}
       
-      {tab === 'deudas' && <DeudasSection debts={debts} members={members} total={totalGrupoDeuda} />}
+      {tab === 'deudas' && (
+        <DeudasSection 
+          debts={debts} 
+          manualDebts={manualDebts}
+          members={members} 
+          total={totalGrupoDeuda} 
+          isAdmin={isAdmin} 
+          currentUserId={session.user.id} 
+          onCreateManualDebt={crearDeudaManual}
+          onRespondManualDebt={responderDeudaManual}
+        />
+      )}
       
       {tab === 'comparativa' && <ComparativasSection season={season} members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} />}
 
@@ -592,7 +654,7 @@ export default function Home() {
 
 // ---------------- SUB-COMPONENTES ----------------
 
-function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, debts, userId }: any) {
+function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, debts, manualDebts, userId }: any) {
   const currentMonday = getMondayOfCurrentWeek();
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -604,7 +666,11 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
   const pendingGroupTotal = workouts.filter((w: Workout) => w.estado === 'pendiente').length;
 
   const myDebts = debts.filter((d: Debt) => d.user_id === userId);
-  const myTotalDebt = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.importe_pendiente), 0);
+  const myManualDebts = manualDebts.filter((d: ManualDebt) => d.user_id === userId && d.estado === 'aceptada');
+  const myDynamicDebt = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.importe_pendiente), 0);
+  const myManualDebtTotal = myManualDebts.reduce((acc: number, d: ManualDebt) => acc + Number(d.importe), 0);
+  const myTotalDebt = myDynamicDebt + myManualDebtTotal;
+
   const failedWorkoutsCount = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.dias_totales_fallados || 0), 0);
 
   const totalThisMonth = myWorkouts.filter((w: Workout) => {
@@ -929,26 +995,96 @@ function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
   );
 }
 
-function DeudasSection({ debts, members, total }: any) {
+function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onRespondManualDebt }: any) {
+  const [targetUserId, setTargetUserId] = useState(members[0]?.user_id || '');
+  const [importeManual, setImporteManual] = useState(5);
+  const [conceptoManual, setConceptoManual] = useState('');
+
+  const myPendingManualDebts = manualDebts.filter((d: ManualDebt) => d.user_id === currentUserId && d.estado === 'pendiente');
+
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onCreateManualDebt(targetUserId, importeManual, conceptoManual);
+    setConceptoManual('');
+    setImporteManual(5);
+  };
+
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <div className="hero compact">
         <div className="debtBig">
           <span>Deuda Global del Grupo</span>
           <strong style={{ color: total === 0 ? '#28a745' : '#ff6b6b' }}>{money(total)}</strong>
         </div>
       </div>
+
+      {myPendingManualDebts.length > 0 && (
+        <CardView title="🔔 Deudas manuales pendientes de tu aprobación">
+          <div className="list">
+            {myPendingManualDebts.map((d: ManualDebt) => (
+              <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #333' }}>
+                <div>
+                  <b>{money(d.importe)}</b> - {d.concepto}
+                  <div style={{ fontSize: '0.8rem', color: '#888' }}>Añadida por un administrador</div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button onClick={() => onRespondManualDebt(d.id, true)}>Aceptar</button>
+                  <button className="danger" onClick={() => onRespondManualDebt(d.id, false)}>Rechazar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardView>
+      )}
+
+      {isAdmin && (
+        <CardView title="Introducir deuda previa manual (Admin)">
+          <form onSubmit={handleManualSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <label>
+              Seleccionar miembro
+              <select value={targetUserId} onChange={e => setTargetUserId(e.target.value)} style={{ width: '100%', padding: '8px', marginTop: '4px' }}>
+                {members.map((m: Member) => (
+                  <option key={m.user_id} value={m.user_id}>{m.profile?.nombre || 'Usuario'}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Importe (€)
+              <input type="number" step="0.5" min="0.5" value={importeManual} onChange={e => setImporteManual(Number(e.target.value))} style={{ width: '100%', padding: '8px', marginTop: '4px' }} required />
+            </label>
+            <label>
+              Concepto o motivo
+              <input type="text" placeholder="Ej. Deuda acumulada temporada anterior" value={conceptoManual} onChange={e => setConceptoManual(e.target.value)} style={{ width: '100%', padding: '8px', marginTop: '4px' }} required />
+            </label>
+            <button type="submit">Enviar deuda al miembro</button>
+          </form>
+        </CardView>
+      )}
+
       <CardView title="Desglose por participantes">
         <div className="debtList">
-          {debts.length ? debts.map((d: Debt) => (
-            <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`}>
-              <span>
-                <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
-                <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
-              </span>
-              <strong style={{ color: Number(d.importe_pendiente) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe_pendiente)}</strong>
-            </div>
-          )) : <p className="muted">Sin deudas acumuladas de semanas anteriores. 🎉</p>}
+          {debts.length || manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada').length ? (
+            <>
+              {debts.map((d: Debt) => (
+                <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`}>
+                  <span>
+                    <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
+                    <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
+                  </span>
+                  <strong style={{ color: Number(d.importe_pendiente) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe_pendiente)}</strong>
+                </div>
+              ))}
+              {manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada').map((d: ManualDebt) => (
+                <div className="debtrow" key={`manual-${d.id}`}>
+                  <span>
+                    <b>{d.profile?.nombre || 'Usuario'}</b>
+                    <small>Deuda previa manual · <em>"{d.concepto}"</em></small>
+                  </span>
+                  <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe)}</strong>
+                </div>
+              ))}
+            </>
+          ) : <p className="muted">Sin deudas acumuladas. 🎉</p>}
         </div>
       </CardView>
     </section>
