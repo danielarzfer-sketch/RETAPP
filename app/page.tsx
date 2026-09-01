@@ -369,6 +369,7 @@ export default function Home() {
       ? (workoutForm.tipoPersonalizado.trim() || 'Otro') 
       : workoutForm.tipo;
 
+    // Validación corregida para permitir entrenamientos personalizados desde 15 min
     const min = workoutForm.tipo === 'carrera' ? 40 : (workoutForm.tipo === 'fuerza' ? 50 : 15);
     if (Number(workoutForm.duracion) < min) { setMsg(`Duración mínima: ${min} min.`); return; }
 
@@ -890,7 +891,7 @@ function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
             <input 
               type="number" 
               placeholder="Duración en minutos" 
-              min={form.tipo === 'carrera' ? 40 : (form.tipo === 'fuerza' ? 50 : 1)} 
+              min={form.tipo === 'carrera' ? 40 : (form.tipo === 'fuerza' ? 50 : 15)} 
               value={form.duracion} 
               onChange={e => setForm({ ...form, duracion: Number(e.target.value) })} 
               style={{ width: '100%', padding: '8px' }}
