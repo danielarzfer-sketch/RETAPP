@@ -159,7 +159,6 @@ export default function Home() {
       setDiasEntreno(c.data.dias_carrera_semana + c.data.dias_fuerza_semana);
       setImporteDia(c.data.importe_propuesto || c.data.importe_dia || 5);
       
-      // Comprobar si el usuario actual tiene una solicitud de revocación pendiente
       const myRev = await supabase.from('solicitudes_revocacion')
         .select('*')
         .eq('challenge_id', c.data.id)
@@ -171,11 +170,9 @@ export default function Home() {
       setMyRevocation(null);
     }
     
-    // Retos pendientes de validar para el Admin
     const pc = await supabase.from('challenges').select('*').eq('season_id', s.id).eq('estado_importe', 'pendiente_aprobacion');
     setPendingChallenges((pc.data || []).map(item => ({ ...item, profile: currentMembers.find(m => m.user_id === item.user_id)?.profile })));
 
-    // Revocaciones pendientes de validar para el Admin
     const activeGroupId = groupId || group?.id;
     if (activeGroupId) {
       const pr = await supabase.from('solicitudes_revocacion').select('*').eq('group_id', activeGroupId).eq('estado', 'pendiente');
@@ -349,17 +346,14 @@ export default function Home() {
 
   async function responderSolicitudRevocacion(solicitud: SolicitudRevocacion, aprobar: boolean) {
     if (aprobar) {
-      // Eliminar el reto para liberar al usuario
       const { error: errChallenge } = await supabase.from('challenges').delete().eq('id', solicitud.challenge_id);
       if (errChallenge) {
         setMsg('Error al eliminar el reto: ' + errChallenge.message);
         return;
       }
-      // Marcar la solicitud como aprobada
       await supabase.from('solicitudes_revocacion').update({ estado: 'aprobada' }).eq('id', solicitud.id);
       setMsg('Revocación aprobada. El reto ha sido cancelado.');
     } else {
-      // Marcar como rechazada
       await supabase.from('solicitudes_revocacion').update({ estado: 'rechazada' }).eq('id', solicitud.id);
       setMsg('Solicitud de revocación rechazada.');
     }
@@ -456,12 +450,26 @@ export default function Home() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <label>
                 Días de entrenamiento por semana
-                <input type="number" min="0" max="7" value={diasEntreno} onChange={e => setDiasEntreno(Number(e.target.value))} />
+                <input 
+                  type="number" 
+                  min="0" 
+                  max="7" 
+                  value={diasEntreno} 
+                  disabled={!!challenge}
+                  onChange={e => setDiasEntreno(Number(e.target.value))} 
+                />
               </label>
 
               <label>
                 Importe de penalización por día fallado (€)
-                <input type="number" step="0.5" min="0" value={importeDia} onChange={e => setImporteDia(Number(e.target.value))} />
+                <input 
+                  type="number" 
+                  step="0.5" 
+                  min="0" 
+                  value={importeDia} 
+                  disabled={!!challenge}
+                  onChange={e => setImporteDia(Number(e.target.value))} 
+                />
                 <small style={{ color: '#888', display: 'block', marginTop: '4px' }}>
                   El importe base es de 5.00 €. Si propones un cambio, requerirá la aprobación de un administrador.
                 </small>
@@ -473,7 +481,16 @@ export default function Home() {
                 </div>
               )}
 
-              <button onClick={saveChallenge}>Guardar reto</button>
+              <button 
+                onClick={saveChallenge}
+                disabled={!!challenge}
+                style={{
+                  opacity: !!challenge ? 0.5 : 1,
+                  cursor: !!challenge ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {challenge ? 'Reto activo (No editable)' : 'Guardar reto'}
+              </button>
             </div>
           </CardView>
           
