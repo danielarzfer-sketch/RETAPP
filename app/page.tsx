@@ -369,7 +369,6 @@ export default function Home() {
       ? (workoutForm.tipoPersonalizado.trim() || 'Otro') 
       : workoutForm.tipo;
 
-    // Validación corregida para permitir entrenamientos personalizados desde 15 min
     const min = workoutForm.tipo === 'carrera' ? 40 : (workoutForm.tipo === 'fuerza' ? 50 : 15);
     if (Number(workoutForm.duracion) < min) { setMsg(`Duración mínima: ${min} min.`); return; }
 
@@ -630,11 +629,11 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
         <div style={{ display: 'flex', gap: '1.5rem' }}>
           <div className="debtBig">
             <span>Tu deuda</span>
-            <strong style={{ color: '#ff6b6b' }}>{money(myTotalDebt)}</strong>
+            <strong style={{ color: myTotalDebt === 0 ? '#28a745' : '#ff6b6b' }}>{money(myTotalDebt)}</strong>
           </div>
           <div className="debtBig" style={{ borderLeft: '1px solid #444', paddingLeft: '1.5rem' }}>
             <span>Deuda global</span>
-            <strong>{money(total)}</strong>
+            <strong style={{ color: total === 0 ? '#28a745' : '#ff6b6b' }}>{money(total)}</strong>
           </div>
         </div>
       </section>
@@ -643,7 +642,7 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
         <StatView n={approvedThisWeek} t="Aprobados esta semana" bg="#d4edda" color="#155724" />
         <StatView n={`${pendingThisWeek} (${money(pendingMoneyEquivalent)})`} t="Restantes esta semana" bg="#fff3cd" color="#856404" />
         <StatView n={pendingGroupTotal} t="Pendientes de validación" bg="#cce5ff" color="#004085" />
-        <StatView n={failedWorkoutsCount} t="Entrenamientos fallidos" bg="#f8d7da" color="#721c24" />
+        <StatView n={`${failedWorkoutsCount} (${money(myTotalDebt)})`} t="Entrenamientos fallidos" bg="#f8d7da" color="#721c24" />
         <StatView n={totalThisMonth} t="Totales este mes" bg="#e2e3e5" color="#383d41" />
         <StatView n={totalAllTime} t="Totales históricos" bg="#e2e3e5" color="#383d41" />
       </div>
@@ -936,7 +935,7 @@ function DeudasSection({ debts, members, total }: any) {
       <div className="hero compact">
         <div className="debtBig">
           <span>Deuda Global del Grupo</span>
-          <strong>{money(total)}</strong>
+          <strong style={{ color: total === 0 ? '#28a745' : '#ff6b6b' }}>{money(total)}</strong>
         </div>
       </div>
       <CardView title="Desglose por participantes">
@@ -947,7 +946,7 @@ function DeudasSection({ debts, members, total }: any) {
                 <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
                 <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
               </span>
-              <strong>{money(d.importe_pendiente)}</strong>
+              <strong style={{ color: Number(d.importe_pendiente) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe_pendiente)}</strong>
             </div>
           )) : <p className="muted">Sin deudas acumuladas de semanas anteriores. 🎉</p>}
         </div>
