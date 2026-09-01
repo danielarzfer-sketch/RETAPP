@@ -86,6 +86,7 @@ export default function Home() {
   const [msg, setMsg] = useState('');
 
   const [login, setLogin] = useState(true);
+  const [isRecovering, setIsRecovering] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [nombre, setNombre] = useState('');
@@ -228,6 +229,26 @@ export default function Home() {
       else setMsg('Cuenta creada. Revisa tu email.');
       setLoading(false);
     }
+  }
+
+  async function handleRecoverPassword() {
+    if (!email.trim()) {
+      setMsg('Por favor, introduce tu correo electrónico.');
+      return;
+    }
+    setMsg('Enviando correo de recuperación...');
+    setLoading(true);
+    
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    });
+
+    if (error) {
+      setMsg('Error: ' + error.message);
+    } else {
+      setMsg('Correo de recuperación enviado. Revisa tu bandeja de entrada.');
+    }
+    setLoading(false);
   }
 
   async function crearGrupo() {
@@ -469,7 +490,24 @@ export default function Home() {
   const totalPendientesAdmin = pendingWorkouts.length + pendingChallenges.length + pendingRevocations.length;
 
   if (loading) return <div className="center"><div className="spinner" />Cargando…</div>;
-  if (!session) return <AuthSection login={login} setLogin={setLogin} email={email} setEmail={setEmail} password={password} setPassword={setPassword} nombre={nombre} setNombre={setNombre} submit={handleAuth} msg={msg} me />;
+  
+  if (!session) return (
+    <AuthSection 
+      login={login} 
+      setLogin={setLogin} 
+      email={email} 
+      setEmail={setEmail} 
+      password={password} 
+      setPassword={setPassword} 
+      nombre={nombre} 
+      setNombre={setNombre} 
+      submit={handleAuth} 
+      msg={msg} 
+      isRecovering={isRecovering}
+      setIsRecovering={setIsRecovering}
+      onRecover={handleRecoverPassword}
+    />
+  );
 
   return (
     <main className="shell">
@@ -1200,12 +1238,64 @@ function AuthSection(p: any) {
   return (
     <main className="auth">
       <div className="authbox">
-        <h1>{p.login ? 'Bienvenido' : 'Crea tu cuenta'}</h1>
-        {!p.login && <input placeholder="Tu nombre" value={p.nombre} onChange={e => p.setNombre(e.target.value)} />}
-        <input type="email" placeholder="Email" value={p.email} onChange={e => p.setEmail(e.target.value)} />
-        <input type="password" placeholder="Contraseña" value={p.password} onChange={e => p.setPassword(e.target.value)} />
-        <button onClick={p.submit}>{p.login ? 'Entrar' : 'Registrarme'}</button>
-        <button className="link" onClick={() => p.setLogin(!p.login)}>{p.login ? 'Crear una cuenta' : 'Ya tengo cuenta'}</button>
+        <h1>
+          {p.isRecovering 
+            ? 'Recuperar contraseña' 
+            : p.login 
+              ? 'Bienvenido' 
+              : 'Crea tu cuenta'}
+        </h1>
+
+        {!p.login && !p.isRecovering && (
+          <input 
+            placeholder="Tu nombre" 
+            value={p.nombre} 
+            onChange={e => p.setNombre(e.target.value)} 
+          />
+        )}
+
+        <input 
+          type="email" 
+          placeholder="Email" 
+          value={p.email} 
+          onChange={e => p.setEmail(e.target.value)} 
+        />
+
+        {!p.isRecovering && (
+          <input 
+            type="password" 
+            placeholder="Contraseña" 
+            value={p.password} 
+            onChange={e => p.setPassword(e.target.value)} 
+          />
+        )}
+
+        <button onClick={p.isRecovering ? p.onRecover : p.submit}>
+          {p.isRecovering 
+            ? 'Enviar enlace de recuperación' 
+            : p.login 
+              ? 'Entrar' 
+              : 'Registrarme'}
+        </button>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '10px' }}>
+          <button 
+            className="link" 
+            onClick={() => {
+              p.setIsRecovering(!p.isRecovering);
+            }}
+          >
+            {p.isRecovering 
+              ? 'Volver al inicio de sesión' 
+              : '¿Has olvidado tu contraseña?'}
+          </button>
+
+          {!p.isRecovering && (
+            <button className="link" onClick={() => p.setLogin(!p.login)}>
+              {p.login ? 'Crear una cuenta' : 'Ya tengo cuenta'}
+            </button>
+          )}
+        </div>
       </div>
     </main>
   );
