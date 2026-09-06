@@ -65,6 +65,14 @@ const getLastTuesdayCutoff = () => {
   return tuesday.toISOString().split('T')[0];
 };
 
+// Función auxiliar para calcular si una fecha dada pertenece a una semana concreta (Lunes a Domingo)
+const isDateInWeek = (dateStr: string, mondayStr: string) => {
+  const d = new Date(dateStr + 'T00:00:00').getTime();
+  const start = new Date(mondayStr + 'T00:00:00').getTime();
+  const end = start + 6 * 24 * 60 * 60 * 1000;
+  return d >= start && d <= end;
+};
+
 export default function Home() {
   const [session, setSession] = useState<any>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -81,6 +89,8 @@ export default function Home() {
   const [manualDebts, setManualDebts] = useState<ManualDebt[]>([]);
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [allGroupWorkouts, setAllGroupWorkouts] = useState<Workout[]>([]);
+  const [allGroupChallenges, setAllGroupChallenges] = useState<Challenge[]>([]);
+  const [allGroupDebts, setAllGroupDebts] = useState<any[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [tab, setTab] = useState('inicio');
   const [loading, setLoading] = useState(true);
@@ -159,6 +169,14 @@ export default function Home() {
 
       const chs = await supabase.from('challenges').select('*').in('season_id', sIds);
       setAllChallenges(chs.data || []);
+      setAllGroupChallenges(chs.data || []);
+
+      const tuesdayCutoff = getLastTuesdayCutoff();
+      const allD = await supabase.from('v_deuda_pendiente')
+        .select('*')
+        .in('season_id', sIds)
+        .lt('semana_inicio', tuesdayCutoff);
+      setAllGroupDebts(allD.data || []);
     }
 
     if (s) await loadSeason(s, currentUserId, memberList, g.id);
@@ -540,7 +558,7 @@ export default function Home() {
 
       {msg && <NoticeView text={msg} />}
 
-      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} debts={debts} manualDebts={acceptedManualDebts} userId={session.user.id} />}
+      {tab === 'inicio' && <InicioSection profile={profile!} season={season} challenge={challenge} total={totalGrupoDeuda} myWorkouts={myWorkouts} workouts={workouts} debts={debts} manualDebts={acceptedManualDebts} userId={session.user.id} allGroupWorkouts={allGroupWorkouts} allGroupChallenges={allGroupChallenges} />}
       
       {tab === 'reto' && (
         <section className="grid2">
@@ -659,7 +677,7 @@ export default function Home() {
         />
       )}
       
-      {tab === 'comparativa' && <ComparativasSection season={season} members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} allChallenges={allChallenges} />}
+      {tab === 'comparativa' && <ComparativasSection season={season} members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} allChallenges={allChallenges} allGroupChallenges={allGroupChallenges} allGroupDebts={allGroupDebts} />}
 
       {tab === 'grupo' && (
         <GrupoSection 
@@ -696,7 +714,7 @@ export default function Home() {
 
 // ---------------- SUB-COMPONENTES ----------------
 
-function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, debts, manualDebts, userId }: any) {
+function InicioSection({ profile, season, challenge, total, myWorkouts, workouts, debts, manualDebts, userId, allGroupWorkouts, allGroupChallenges }: any) {
   const currentMonday = getMondayOfCurrentWeek();
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -722,6 +740,39 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
   }).length;
 
   const totalAllTime = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
+
+  // Cálculo de entrenamientos extras histórico para el usuario actual
+  const myExtraWorkoutsAllTime = useMemo(() => {
+    if (!season) return 0;
+    // Agrupar entrenamientos de este usuario por semana de la temporada
+    const userWorkouts = allGroupWorkouts.filter((w: Workout) => w.user_id === userId);
+    
+    // Generar las semanas de la temporada actual
+    let current = new Date(season.fecha_inicio + 'T00:00:00');
+    const endDate = new Date(season.fecha_fin + 'T00:00:00');
+    let totalExtras = 0;
+
+    while (current <= endDate) {
+      const startStr = current.toISOString().split('T')[0];
+      const endTemp = new Date(current);
+      endTemp.setDate(endTemp.getDate() + 6);
+      const endStr = endTemp.toISOString().split('T')[0];
+
+      // Entrenamientos del usuario en esta semana
+      const weekWorkouts = userWorkouts.filter((w: Workout) => w.fecha >= startStr && w.fecha <= endStr);
+      
+      // Buscar reto del usuario para esta temporada
+      const userChallenge = allGroupChallenges.find((c: Challenge) => c.season_id === season.id && c.user_id === userId);
+      const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
+
+      if (weekWorkouts.length > targetDays) {
+        totalExtras += (weekWorkouts.length - targetDays);
+      }
+
+      current.setDate(current.getDate() + 7);
+    }
+    return totalExtras;
+  }, [allGroupWorkouts, allGroupChallenges, season, userId]);
 
   const importePorDia = challenge ? Number(challenge.importe_dia || 5) : 5;
   const pendingMoneyEquivalent = pendingThisWeek * importePorDia;
@@ -753,6 +804,7 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
         <StatView n={`${failedWorkoutsCount} (${money(myTotalDebt)})`} t="Entrenamientos fallidos" bg="#f8d7da" color="#721c24" />
         <StatView n={totalThisMonth} t="Totales este mes" bg="#e2e3e5" color="#383d41" />
         <StatView n={totalAllTime} t="Totales históricos" bg="#e2e3e5" color="#383d41" />
+        <StatView n={myExtraWorkoutsAllTime} t="Entrenamientos extras (histórico)" bg="#d1ecf1" color="#0c5460" />
       </div>
     </>
   );
@@ -767,7 +819,7 @@ function StatView({ n, t, bg, color }: { n: any; t: string; bg?: string; color?:
   );
 }
 
-function ComparativasSection({ season, members, workouts, currentSeasonWorkouts, allChallenges }: any) {
+function ComparativasSection({ season, members, workouts, currentSeasonWorkouts, allChallenges, allGroupChallenges, allGroupDebts }: any) {
   const [selectedWeekStart, setSelectedWeekStart] = useState<string>(getMondayOfCurrentWeek());
 
   const seasonWeeks = useMemo(() => {
@@ -793,19 +845,18 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
     return weeks;
   }, [season]);
 
-  // Datos para el gráfico: histórico de cada uno + total mensual
+  // Datos para el gráfico: histórico de cada miembro (sin total del grupo)
   const chartData = useMemo(() => {
     const months: Record<string, any> = {};
     workouts.forEach((w: Workout) => {
       const date = new Date(w.fecha);
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
       if (!months[monthKey]) {
-        months[monthKey] = { month: monthKey, TotalGrupo: 0 };
+        months[monthKey] = { month: monthKey };
         members.forEach((m: Member) => { months[monthKey][m.profile?.nombre || 'Desconocido'] = 0; });
       }
       const userName = w.profile?.nombre || 'Desconocido';
       months[monthKey][userName] = (months[monthKey][userName] || 0) + 1;
-      months[monthKey].TotalGrupo += 1;
     });
     return Object.values(months).sort((a, b) => a.month.localeCompare(b.month));
   }, [workouts, members]);
@@ -822,7 +873,6 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
         w.fecha <= activeWeek.end
       );
 
-      // Buscar el reto de este usuario en la temporada actual
       const userChallenge = allChallenges?.find((c: Challenge) => c.season_id === season?.id && c.user_id === m.user_id);
       const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
 
@@ -846,9 +896,56 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
     });
   }, [members, currentSeasonWorkouts, selectedWeekStart, seasonWeeks, allChallenges, season]);
 
+  // Cálculo de la tabla resumen histórico para cada miembro (Histórico total, Histórico de fallos, Histórico de extras)
+  const historicalSummaryData = useMemo(() => {
+    if (!season) return [];
+
+    // Generar todas las semanas de la temporada una sola vez
+    let weeksList: { start: string; end: string }[] = [];
+    let current = new Date(season.fecha_inicio + 'T00:00:00');
+    const endDate = new Date(season.fecha_fin + 'T00:00:00');
+    while (current <= endDate) {
+      const startStr = current.toISOString().split('T')[0];
+      const endTemp = new Date(current);
+      endTemp.setDate(endTemp.getDate() + 6);
+      weeksList.push({ start: startStr, end: endTemp.toISOString().split('T')[0] });
+      current.setDate(current.getDate() + 7);
+    }
+
+    return members.map((m: Member) => {
+      // 1. Histórico total de entrenamientos aprobados
+      const totalWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id).length;
+
+      // 2. Histórico de fallos (sumando días fallados de las deudas de la temporada o histórico)
+      const userDebts = allGroupDebts.filter((d: any) => d.user_id === m.user_id);
+      const totalFailures = userDebts.reduce((acc: number, d: any) => acc + Number(d.dias_totales_fallados || 0), 0);
+
+      // 3. Histórico de extras
+      const userWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id);
+      let totalExtras = 0;
+
+      weeksList.forEach(week => {
+        const weekWorkoutsCount = userWorkouts.filter((w: Workout) => w.fecha >= week.start && w.fecha <= week.end).length;
+        const userChallenge = allGroupChallenges.find((c: Challenge) => c.season_id === season.id && c.user_id === m.user_id);
+        const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
+        
+        if (weekWorkoutsCount > targetDays) {
+          totalExtras += (weekWorkoutsCount - targetDays);
+        }
+      });
+
+      return {
+        name: m.profile?.nombre || 'Usuario',
+        totalWorkouts,
+        totalFailures,
+        totalExtras
+      };
+    });
+  }, [members, workouts, season, allGroupDebts, allGroupChallenges]);
+
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      <CardView title="Evolución Histórica y Total Mensual de Entrenamientos">
+      <CardView title="Evolución Histórica Mensual de Entrenamientos">
         <div style={{ width: '100%', height: 300 }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
@@ -857,7 +954,6 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
               <YAxis allowDecimals={false} />
               <Tooltip />
               <Legend />
-              <Line type="monotone" dataKey="TotalGrupo" name="Total Mensual Grupo" stroke="#ff7300" strokeWidth={3} strokeDasharray="5 5" />
               {members.map((m: Member, idx: number) => (
                 <Line key={m.user_id} type="monotone" dataKey={m.profile?.nombre || 'Usuario'} stroke={`hsl(${idx * 137.5 % 360}, 70%, 50%)`} strokeWidth={2} />
               ))}
@@ -898,6 +994,29 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
                 {row.attendance.map((done: boolean, idx: number) => (
                   <td key={idx}>{done ? '✅' : '❌'}</td>
                 ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardView>
+
+      <CardView title="Resumen Histórico Global de Participantes">
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>Miembro</th>
+              <th>Total Histórico</th>
+              <th>Histórico de Fallos</th>
+              <th>Histórico de Extras</th>
+            </tr>
+          </thead>
+          <tbody>
+            {historicalSummaryData.map((row: any, i: number) => (
+              <tr key={i} style={{ borderTop: '1px solid #333' }}>
+                <td style={{ textAlign: 'left', padding: '10px 0' }}><b>{row.name}</b></td>
+                <td>{row.totalWorkouts}</td>
+                <td style={{ color: row.totalFailures > 0 ? '#ff6b6b' : 'inherit' }}>{row.totalFailures}</td>
+                <td style={{ color: '#28a745', fontWeight: 'bold' }}>{row.totalExtras}</td>
               </tr>
             ))}
           </tbody>
