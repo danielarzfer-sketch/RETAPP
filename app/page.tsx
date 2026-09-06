@@ -74,6 +74,7 @@ export default function Home() {
   const [seasons, setSeasons] = useState<Season[]>([]);
   const [season, setSeason] = useState<Season | null>(null);
   const [challenge, setChallenge] = useState<Challenge | null>(null);
+  const [allChallenges, setAllChallenges] = useState<Challenge[]>([]);
   const [pendingChallenges, setPendingChallenges] = useState<Challenge[]>([]);
   const [pendingRevocations, setPendingRevocations] = useState<SolicitudRevocacion[]>([]);
   const [myRevocation, setMyRevocation] = useState<SolicitudRevocacion | null>(null);
@@ -155,6 +156,9 @@ export default function Home() {
     if (sIds.length) {
       const gw = await supabase.from('workouts').select('*').in('season_id', sIds).eq('estado', 'aprobado');
       setAllGroupWorkouts((gw.data || []).map(x => ({ ...x, profile: (ps.data || []).find(p => p.id === x.user_id) })));
+
+      const chs = await supabase.from('challenges').select('*').in('season_id', sIds);
+      setAllChallenges(chs.data || []);
     }
 
     if (s) await loadSeason(s, currentUserId, memberList, g.id);
@@ -655,7 +659,7 @@ export default function Home() {
         />
       )}
       
-      {tab === 'comparativa' && <ComparativasSection season={season} members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} />}
+      {tab === 'comparativa' && <ComparativasSection season={season} members={members} workouts={allGroupWorkouts} currentSeasonWorkouts={workouts} allChallenges={allChallenges} />}
 
       {tab === 'grupo' && (
         <GrupoSection 
@@ -763,7 +767,7 @@ function StatView({ n, t, bg, color }: { n: any; t: string; bg?: string; color?:
   );
 }
 
-function ComparativasSection({ season, members, workouts, currentSeasonWorkouts }: any) {
+function ComparativasSection({ season, members, workouts, currentSeasonWorkouts, allChallenges }: any) {
   const [selectedWeekStart, setSelectedWeekStart] = useState<string>(getMondayOfCurrentWeek());
 
   const seasonWeeks = useMemo(() => {
@@ -789,21 +793,24 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts 
     return weeks;
   }, [season]);
 
+  // Datos para el gráfico: histórico de cada uno + total mensual
   const chartData = useMemo(() => {
     const months: Record<string, any> = {};
     workouts.forEach((w: Workout) => {
       const date = new Date(w.fecha);
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
       if (!months[monthKey]) {
-        months[monthKey] = { month: monthKey };
+        months[monthKey] = { month: monthKey, TotalGrupo: 0 };
         members.forEach((m: Member) => { months[monthKey][m.profile?.nombre || 'Desconocido'] = 0; });
       }
       const userName = w.profile?.nombre || 'Desconocido';
       months[monthKey][userName] = (months[monthKey][userName] || 0) + 1;
+      months[monthKey].TotalGrupo += 1;
     });
     return Object.values(months).sort((a, b) => a.month.localeCompare(b.month));
   }, [workouts, members]);
 
+  // Cálculo para la tabla de registro semanal con el reto entre paréntesis y validación de completado
   const weeklyData = useMemo(() => {
     const activeWeek = seasonWeeks.find(w => w.start === selectedWeekStart) || { start: selectedWeekStart, end: selectedWeekStart };
     
@@ -815,22 +822,33 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts 
         w.fecha <= activeWeek.end
       );
 
+      // Buscar el reto de este usuario en la temporada actual
+      const userChallenge = allChallenges?.find((c: Challenge) => c.season_id === season?.id && c.user_id === m.user_id);
+      const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
+
       const daysOfWeek = [0, 1, 2, 3, 4, 5, 6];
+      let completedCount = 0;
+
       const attendance = daysOfWeek.map((dayIdx) => {
-        return userWorkouts.some((w: Workout) => {
+        const hasDone = userWorkouts.some((w: Workout) => {
           const d = new Date(w.fecha + 'T00:00:00');
           const day = d.getDay();
           const adjustedDay = day === 0 ? 6 : day - 1;
           return adjustedDay === dayIdx;
         });
+        if (hasDone) completedCount++;
+        return hasDone;
       });
-      return { name: m.profile?.nombre, attendance };
+
+      const isCompleted = targetDays > 0 && completedCount >= targetDays;
+
+      return { name: m.profile?.nombre, targetDays, attendance, isCompleted };
     });
-  }, [members, currentSeasonWorkouts, selectedWeekStart, seasonWeeks]);
+  }, [members, currentSeasonWorkouts, selectedWeekStart, seasonWeeks, allChallenges, season]);
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      <CardView title="Evolución Mensual de Entrenamientos">
+      <CardView title="Evolución Histórica y Total Mensual de Entrenamientos">
         <div style={{ width: '100%', height: 300 }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
@@ -839,6 +857,7 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts 
               <YAxis allowDecimals={false} />
               <Tooltip />
               <Legend />
+              <Line type="monotone" dataKey="TotalGrupo" name="Total Mensual Grupo" stroke="#ff7300" strokeWidth={3} strokeDasharray="5 5" />
               {members.map((m: Member, idx: number) => (
                 <Line key={m.user_id} type="monotone" dataKey={m.profile?.nombre || 'Usuario'} stroke={`hsl(${idx * 137.5 % 360}, 70%, 50%)`} strokeWidth={2} />
               ))}
@@ -859,14 +878,23 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts 
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
           <thead>
             <tr>
-              <th style={{ textAlign: 'left' }}>Miembro</th>
+              <th style={{ textAlign: 'left' }}>Miembro (Reto)</th>
               <th>L</th><th>M</th><th>X</th><th>J</th><th>V</th><th>S</th><th>D</th>
             </tr>
           </thead>
           <tbody>
             {weeklyData.map((row: any, i: number) => (
-              <tr key={i} style={{ borderTop: '1px solid #333' }}>
-                <td style={{ textAlign: 'left', padding: '8px 0' }}><b>{row.name}</b></td>
+              <tr 
+                key={i} 
+                style={{ 
+                  borderTop: '1px solid #333', 
+                  backgroundColor: row.isCompleted ? 'rgba(40, 167, 69, 0.2)' : 'transparent' 
+                }}
+              >
+                <td style={{ textAlign: 'left', padding: '8px 0' }}>
+                  <b>{row.name}</b> <span style={{ color: '#888', fontSize: '0.85rem' }}>({row.targetDays} días)</span>
+                  {row.isCompleted && <span style={{ marginLeft: '6px', color: '#28a745', fontWeight: 'bold' }}>✓ ¡Conseguido!</span>}
+                </td>
                 {row.attendance.map((done: boolean, idx: number) => (
                   <td key={idx}>{done ? '✅' : '❌'}</td>
                 ))}
