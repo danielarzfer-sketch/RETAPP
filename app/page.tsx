@@ -94,7 +94,6 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [nombre, setNombre] = useState('');
 
-  // Formularios
   const [nuevoNombreGrupo, setNuevoNombreGrupo] = useState('');
   const [codigoUnirse, setCodigoUnirse] = useState('');
   const [diasEntreno, setDiasEntreno] = useState(0);
@@ -411,7 +410,7 @@ export default function Home() {
 
   async function crearDeudaManual(userId: string, importe: number, concepto: string) {
     if (!season) { setMsg('No hay temporada activa.'); return; }
-    if (!importe || importe <= 0) { setMsg('Introduce un importe válido.'); return; }
+    if (!importe || importe === 0) { setMsg('Introduce un importe válido.'); return; }
     if (!concepto.trim()) { setMsg('Introduce un concepto para la deuda.'); return; }
 
     const { error } = await supabase.from('deudas_manuales').insert({
@@ -428,6 +427,17 @@ export default function Home() {
     } else {
       setMsg('Deuda manual creada. Pendiente de validación por el usuario.');
       await loadSeason(season, session.user.id);
+    }
+  }
+
+  async function eliminarDeudaManual(deudaId: string) {
+    if (!confirm('¿Seguro que deseas eliminar este registro de deuda manual?')) return;
+    const { error } = await supabase.from('deudas_manuales').delete().eq('id', deudaId);
+    if (error) {
+      setMsg('Error al eliminar la deuda: ' + error.message);
+    } else {
+      setMsg('Deuda manual eliminada correctamente.');
+      await loadSeason(season!, session.user.id);
     }
   }
 
@@ -665,6 +675,7 @@ export default function Home() {
           isAdmin={isAdmin} 
           currentUserId={session.user.id} 
           onCreateManualDebt={crearDeudaManual}
+          onDeleteManualDebt={eliminarDeudaManual}
           onRespondManualDebt={responderDeudaManual}
         />
       )}
@@ -733,7 +744,6 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
 
   const totalAllTime = myWorkouts.filter((w: Workout) => w.estado === 'aprobado').length;
 
-  // Cálculo de entrenamientos extras histórico para el usuario actual
   const myExtraWorkoutsAllTime = useMemo(() => {
     if (!season) return 0;
     const userWorkouts = allGroupWorkouts.filter((w: Workout) => w.user_id === userId);
@@ -896,15 +906,19 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
       current.setDate(current.getDate() + 7);
     }
 
+    const tuesdayCutoff = getLastTuesdayCutoff();
+
     return members.map((m: Member) => {
-      const totalWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id).length;
-      const userDebts = allGroupDebts.filter((d: any) => d.user_id === m.user_id);
+      const totalWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id && w.estado === 'aprobado').length;
+      
+      const userDebts = allGroupDebts.filter((d: any) => d.user_id === m.user_id && d.semana_inicio < tuesdayCutoff);
       const totalFailures = userDebts.reduce((acc: number, d: any) => acc + Number(d.dias_totales_fallados || 0), 0);
 
-      const userWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id);
+      const userWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id && w.estado === 'aprobado');
       let totalExtras = 0;
 
       weeksList.forEach(week => {
+        if (week.start >= tuesdayCutoff) return; // Solo semanas pasadas vencidas
         const weekWorkoutsCount = userWorkouts.filter((w: Workout) => w.fecha >= week.start && w.fecha <= week.end).length;
         const userChallenge = allGroupChallenges.find((c: Challenge) => c.season_id === season.id && c.user_id === m.user_id);
         const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
@@ -1160,18 +1174,17 @@ function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
   );
 }
 
-function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onRespondManualDebt }: any) {
+function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onDeleteManualDebt, onRespondManualDebt }: any) {
   const [targetUserId, setTargetUserId] = useState(members[0]?.user_id || '');
   const [importeManual, setImporteManual] = useState(5);
   const [conceptoManual, setConceptoManual] = useState('');
 
   const myPendingManualDebts = manualDebts.filter((d: ManualDebt) => d.user_id === currentUserId && d.estado === 'pendiente');
 
-  // Filtramos las deudas automáticas restando de forma reactiva los abonos/compensaciones manuales asociados a la semana
   const deudasFiltradas = useMemo(() => {
     return debts.map((d: Debt) => {
       const compensacion = manualDebts
-        .filter((md: ManualDebt) => md.user_id === d.user_id && md.importe < 0 && md.concepto?.includes(d.semana_inicio))
+        .filter((md: ManualDebt) => md.user_id === d.user_id && md.importe < 0 && md.concepto?.includes(d.semana_inicio) && md.estado === 'aceptada')
         .reduce((acc: number, md: ManualDebt) => acc + Math.abs(Number(md.importe)), 0);
 
       const pendienteReal = Number(d.importe_pendiente) - compensacion;
@@ -1179,7 +1192,7 @@ function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUse
     }).filter((d: Debt & { pendienteReal: number }) => d.pendienteReal > 0);
   }, [debts, manualDebts]);
 
-  const manualesActivas = manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada' && Number(d.importe) > 0);
+  const manualesActivas = manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada');
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1228,14 +1241,14 @@ function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUse
               </select>
             </label>
             <label>
-              Importe (€)
-              <input type="number" step="0.5" min="0.5" value={importeManual} onChange={e => setImporteManual(Number(e.target.value))} style={{ width: '100%', padding: '8px', marginTop: '4px' }} required />
+              Importe (€) <small style={{ color: '#888' }}>(Usa valores negativos si es una bonificación/descuento)</small>
+              <input type="number" step="0.5" value={importeManual} onChange={e => setImporteManual(Number(e.target.value))} style={{ width: '100%', padding: '8px', marginTop: '4px' }} required />
             </label>
             <label>
               Concepto o motivo
               <input type="text" placeholder="Ej. Deuda acumulada temporada anterior" value={conceptoManual} onChange={e => setConceptoManual(e.target.value)} style={{ width: '100%', padding: '8px', marginTop: '4px' }} required />
             </label>
-            <button type="submit">Enviar deuda al miembro</button>
+            <button type="submit">Enviar ajuste/deuda al miembro</button>
           </form>
         </CardView>
       )}
@@ -1254,12 +1267,19 @@ function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUse
                 </div>
               ))}
               {manualesActivas.map((d: ManualDebt) => (
-                <div className="debtrow" key={`manual-${d.id}`}>
+                <div className="debtrow" key={`manual-${d.id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span>
                     <b>{d.profile?.nombre || 'Usuario'}</b>
-                    <small>Deuda previa manual · <em>"{d.concepto}"</em></small>
+                    <small>Ajuste manual · <em>"{d.concepto}"</em></small>
                   </span>
-                  <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe)}</strong>
+                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                    <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : (Number(d.importe) < 0 ? '#28a745' : '#ff6b6b') }}>
+                      {money(d.importe)}
+                    </strong>
+                    {isAdmin && (
+                      <button className="danger" style={{ padding: '2px 6px', fontSize: '11px' }} onClick={() => onDeleteManualDebt(d.id)}>Eliminar</button>
+                    )}
+                  </div>
                 </div>
               ))}
             </>
