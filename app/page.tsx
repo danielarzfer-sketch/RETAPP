@@ -65,14 +65,6 @@ const getLastTuesdayCutoff = () => {
   return tuesday.toISOString().split('T')[0];
 };
 
-// Función auxiliar para calcular si una fecha dada pertenece a una semana concreta (Lunes a Domingo)
-const isDateInWeek = (dateStr: string, mondayStr: string) => {
-  const d = new Date(dateStr + 'T00:00:00').getTime();
-  const start = new Date(mondayStr + 'T00:00:00').getTime();
-  const end = start + 6 * 24 * 60 * 60 * 1000;
-  return d >= start && d <= end;
-};
-
 export default function Home() {
   const [session, setSession] = useState<any>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -450,6 +442,39 @@ export default function Home() {
     }
   }
 
+  async function borrarDeuda(deuda: any, isManual: boolean) {
+    if (!confirm('¿Seguro que quieres borrar esta multa?')) return;
+    if (!season) return;
+    
+    setMsg('Procesando eliminación de deuda...');
+    
+    if (isManual) {
+      const { error } = await supabase.from('deudas_manuales').delete().eq('id', deuda.id);
+      if (error) {
+        setMsg('Error al borrar deuda manual: ' + error.message);
+      } else {
+        setMsg('Deuda manual eliminada correctamente.');
+        await loadSeason(season, session.user.id);
+      }
+    } else {
+      // Para deudas automáticas, creamos un registro manual negativo para cancelarla
+      const { error } = await supabase.from('deudas_manuales').insert({
+        season_id: season.id,
+        user_id: deuda.user_id,
+        admin_id: session.user.id,
+        importe: -Number(deuda.importe_pendiente),
+        concepto: `Cancelación manual de deuda automática (Semana del ${formatDate(deuda.semana_inicio)})`,
+        estado: 'aceptada' // Se acepta automáticamente porque la está borrando el admin
+      });
+      if (error) {
+        setMsg('Error al cancelar la deuda automática: ' + error.message);
+      } else {
+        setMsg('Multa eliminada correctamente mediante ajuste de saldo.');
+        await loadSeason(season, session.user.id);
+      }
+    }
+  }
+
   async function uploadWorkout() {
     setMsg('');
     if (!season) { setMsg('No hay una temporada activa.'); return; }
@@ -674,6 +699,7 @@ export default function Home() {
           currentUserId={session.user.id} 
           onCreateManualDebt={crearDeudaManual}
           onRespondManualDebt={responderDeudaManual}
+          onDeleteDebt={borrarDeuda}
         />
       )}
       
@@ -1180,7 +1206,7 @@ function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
   );
 }
 
-function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onRespondManualDebt }: any) {
+function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onRespondManualDebt, onDeleteDebt }: any) {
   const [targetUserId, setTargetUserId] = useState(members[0]?.user_id || '');
   const [importeManual, setImporteManual] = useState(5);
   const [conceptoManual, setConceptoManual] = useState('');
@@ -1251,21 +1277,39 @@ function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUse
           {debts.length || manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada').length ? (
             <>
               {debts.map((d: Debt) => (
-                <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`}>
-                  <span>
-                    <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
-                    <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
-                  </span>
-                  <strong style={{ color: Number(d.importe_pendiente) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe_pendiente)}</strong>
+                <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ flex: 1 }}>
+                    <span>
+                      <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
+                      <small style={{ display: 'block' }}>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                    <strong style={{ color: Number(d.importe_pendiente) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe_pendiente)}</strong>
+                    {isAdmin && Number(d.importe_pendiente) > 0 && (
+                      <button className="danger ghost" style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => onDeleteDebt(d, false)}>
+                        Borrar
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
               {manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada').map((d: ManualDebt) => (
-                <div className="debtrow" key={`manual-${d.id}`}>
-                  <span>
-                    <b>{d.profile?.nombre || 'Usuario'}</b>
-                    <small>Deuda previa manual · <em>"{d.concepto}"</em></small>
-                  </span>
-                  <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe)}</strong>
+                <div className="debtrow" key={`manual-${d.id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
+                  <div style={{ flex: 1 }}>
+                    <span>
+                      <b>{d.profile?.nombre || 'Usuario'}</b>
+                      <small style={{ display: 'block' }}>Deuda manual · <em>"{d.concepto}"</em></small>
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                    <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe)}</strong>
+                    {isAdmin && (
+                      <button className="danger ghost" style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => onDeleteDebt(d, true)}>
+                        Borrar
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </>
