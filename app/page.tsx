@@ -507,7 +507,20 @@ export default function Home() {
   
   const acceptedManualDebts = manualDebts.filter(d => d.estado === 'aceptada');
   const totalManualDebt = acceptedManualDebts.reduce((a, d) => a + Number(d.importe), 0);
-  const totalGrupoDeuda = useMemo(() => debts.reduce((a, d) => a + Number(d.importe_pendiente), 0) + totalManualDebt, [debts, totalManualDebt]);
+  const totalGrupoDeuda = useMemo(() => {
+    const dynamicTotal = debts.reduce((a, d) => {
+      const compensacion = manualDebts
+        .filter((md: ManualDebt) => md.user_id === d.user_id && Number(md.importe) < 0 && md.concepto?.includes(d.semana_inicio) && md.estado === 'aceptada')
+        .reduce((acc: number, md: ManualDebt) => acc + Math.abs(Number(md.importe)), 0);
+      return a + Math.max(0, Number(d.importe_pendiente) - compensacion);
+    }, 0);
+
+    const otherManuals = acceptedManualDebts
+      .filter((md: ManualDebt) => !debts.some((d: Debt) => d.user_id === md.user_id && md.concepto?.includes(d.semana_inicio)))
+      .reduce((a, md) => a + Number(md.importe), 0);
+
+    return dynamicTotal + otherManuals;
+  }, [debts, manualDebts, acceptedManualDebts]);
 
   const myWorkouts = workouts.filter(w => w.user_id === session?.user?.id);
   const pendingWorkouts = workouts.filter(w => w.estado === 'pendiente');
@@ -730,9 +743,19 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
 
   const myDebts = debts.filter((d: Debt) => d.user_id === userId);
   const myManualDebts = manualDebts.filter((d: ManualDebt) => d.user_id === userId && d.estado === 'aceptada');
-  const myDynamicDebt = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.importe_pendiente), 0);
-  const myManualDebtTotal = myManualDebts.reduce((acc: number, d: ManualDebt) => acc + Number(d.importe), 0);
-  const myTotalDebt = myDynamicDebt + myManualDebtTotal;
+  
+  const myDynamicDebt = myDebts.reduce((acc: number, d: Debt) => {
+    const compensacion = myManualDebts
+      .filter((md: ManualDebt) => Number(md.importe) < 0 && md.concepto?.includes(d.semana_inicio))
+      .reduce((subAcc: number, md: ManualDebt) => subAcc + Math.abs(Number(md.importe)), 0);
+    return acc + Math.max(0, Number(d.importe_pendiente) - compensacion);
+  }, 0);
+
+  const otherMyManuals = myManualDebts
+    .filter((md: ManualDebt) => !myDebts.some((d: Debt) => md.concepto?.includes(d.semana_inicio)))
+    .reduce((acc: number, md: ManualDebt) => acc + Number(md.importe), 0);
+
+  const myTotalDebt = myDynamicDebt + otherMyManuals;
 
   const failedWorkoutsCount = myDebts.reduce((acc: number, d: Debt) => acc + Number(d.dias_totales_fallados || 0), 0);
 
@@ -918,7 +941,7 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
       let totalExtras = 0;
 
       weeksList.forEach(week => {
-        if (week.start >= tuesdayCutoff) return; // Solo semanas pasadas vencidas
+        if (week.start >= tuesdayCutoff) return;
         const weekWorkoutsCount = userWorkouts.filter((w: Workout) => w.fecha >= week.start && w.fecha <= week.end).length;
         const userChallenge = allGroupChallenges.find((c: Challenge) => c.season_id === season.id && c.user_id === m.user_id);
         const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
@@ -1184,10 +1207,10 @@ function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUse
   const deudasFiltradas = useMemo(() => {
     return debts.map((d: Debt) => {
       const compensacion = manualDebts
-        .filter((md: ManualDebt) => md.user_id === d.user_id && md.importe < 0 && md.concepto?.includes(d.semana_inicio) && md.estado === 'aceptada')
+        .filter((md: ManualDebt) => md.user_id === d.user_id && Number(md.importe) < 0 && md.concepto?.includes(d.semana_inicio) && md.estado === 'aceptada')
         .reduce((acc: number, md: ManualDebt) => acc + Math.abs(Number(md.importe)), 0);
 
-      const pendienteReal = Number(d.importe_pendiente) - compensacion;
+      const pendienteReal = Math.max(0, Number(d.importe_pendiente) - compensacion);
       return { ...d, pendienteReal };
     }).filter((d: Debt & { pendienteReal: number }) => d.pendienteReal > 0);
   }, [debts, manualDebts]);
