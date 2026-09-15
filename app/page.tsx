@@ -432,12 +432,16 @@ export default function Home() {
 
   async function eliminarDeudaManual(deudaId: string) {
     if (!confirm('¿Seguro que deseas eliminar este registro de deuda manual?')) return;
+    
     const { error } = await supabase.from('deudas_manuales').delete().eq('id', deudaId);
+    
     if (error) {
-      setMsg('Error al eliminar la deuda: ' + error.message);
+      setMsg('Error al eliminar en Supabase: ' + error.message);
     } else {
       setMsg('Deuda manual eliminada correctamente.');
-      await loadSeason(season!, session.user.id);
+      if (season) {
+        await loadSeason(season, session.user.id);
+      }
     }
   }
 
