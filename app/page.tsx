@@ -442,39 +442,6 @@ export default function Home() {
     }
   }
 
-  async function borrarDeuda(deuda: any, isManual: boolean) {
-    if (!confirm('¿Seguro que quieres borrar esta multa?')) return;
-    if (!season) return;
-    
-    setMsg('Procesando eliminación de deuda...');
-    
-    if (isManual) {
-      const { error } = await supabase.from('deudas_manuales').delete().eq('id', deuda.id);
-      if (error) {
-        setMsg('Error al borrar deuda manual: ' + error.message);
-      } else {
-        setMsg('Deuda manual eliminada correctamente.');
-        await loadSeason(season, session.user.id);
-      }
-    } else {
-      // Para deudas automáticas, creamos un registro manual negativo para cancelarla
-      const { error } = await supabase.from('deudas_manuales').insert({
-        season_id: season.id,
-        user_id: deuda.user_id,
-        admin_id: session.user.id,
-        importe: -Number(deuda.importe_pendiente),
-        concepto: `Cancelación manual de deuda automática (Semana del ${formatDate(deuda.semana_inicio)})`,
-        estado: 'aceptada' // Se acepta automáticamente porque la está borrando el admin
-      });
-      if (error) {
-        setMsg('Error al cancelar la deuda automática: ' + error.message);
-      } else {
-        setMsg('Multa eliminada correctamente mediante ajuste de saldo.');
-        await loadSeason(season, session.user.id);
-      }
-    }
-  }
-
   async function uploadWorkout() {
     setMsg('');
     if (!season) { setMsg('No hay una temporada activa.'); return; }
@@ -699,7 +666,6 @@ export default function Home() {
           currentUserId={session.user.id} 
           onCreateManualDebt={crearDeudaManual}
           onRespondManualDebt={responderDeudaManual}
-          onDeleteDebt={borrarDeuda}
         />
       )}
       
@@ -770,10 +736,8 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
   // Cálculo de entrenamientos extras histórico para el usuario actual
   const myExtraWorkoutsAllTime = useMemo(() => {
     if (!season) return 0;
-    // Agrupar entrenamientos de este usuario por semana de la temporada
     const userWorkouts = allGroupWorkouts.filter((w: Workout) => w.user_id === userId);
     
-    // Generar las semanas de la temporada actual
     let current = new Date(season.fecha_inicio + 'T00:00:00');
     const endDate = new Date(season.fecha_fin + 'T00:00:00');
     let totalExtras = 0;
@@ -784,10 +748,8 @@ function InicioSection({ profile, season, challenge, total, myWorkouts, workouts
       endTemp.setDate(endTemp.getDate() + 6);
       const endStr = endTemp.toISOString().split('T')[0];
 
-      // Entrenamientos del usuario en esta semana
       const weekWorkouts = userWorkouts.filter((w: Workout) => w.fecha >= startStr && w.fecha <= endStr);
       
-      // Buscar reto del usuario para esta temporada
       const userChallenge = allGroupChallenges.find((c: Challenge) => c.season_id === season.id && c.user_id === userId);
       const targetDays = userChallenge ? (userChallenge.dias_carrera_semana + userChallenge.dias_fuerza_semana) : 0;
 
@@ -871,7 +833,6 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
     return weeks;
   }, [season]);
 
-  // Datos para el gráfico: histórico de cada miembro (sin total del grupo)
   const chartData = useMemo(() => {
     const months: Record<string, any> = {};
     workouts.forEach((w: Workout) => {
@@ -887,7 +848,6 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
     return Object.values(months).sort((a, b) => a.month.localeCompare(b.month));
   }, [workouts, members]);
 
-  // Cálculo para la tabla de registro semanal con el reto entre paréntesis y validación de completado
   const weeklyData = useMemo(() => {
     const activeWeek = seasonWeeks.find(w => w.start === selectedWeekStart) || { start: selectedWeekStart, end: selectedWeekStart };
     
@@ -922,11 +882,9 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
     });
   }, [members, currentSeasonWorkouts, selectedWeekStart, seasonWeeks, allChallenges, season]);
 
-  // Cálculo de la tabla resumen histórico para cada miembro (Histórico total, Histórico de fallos, Histórico de extras)
   const historicalSummaryData = useMemo(() => {
     if (!season) return [];
 
-    // Generar todas las semanas de la temporada una sola vez
     let weeksList: { start: string; end: string }[] = [];
     let current = new Date(season.fecha_inicio + 'T00:00:00');
     const endDate = new Date(season.fecha_fin + 'T00:00:00');
@@ -939,14 +897,10 @@ function ComparativasSection({ season, members, workouts, currentSeasonWorkouts,
     }
 
     return members.map((m: Member) => {
-      // 1. Histórico total de entrenamientos aprobados
       const totalWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id).length;
-
-      // 2. Histórico de fallos (sumando días fallados de las deudas de la temporada o histórico)
       const userDebts = allGroupDebts.filter((d: any) => d.user_id === m.user_id);
       const totalFailures = userDebts.reduce((acc: number, d: any) => acc + Number(d.dias_totales_fallados || 0), 0);
 
-      // 3. Histórico de extras
       const userWorkouts = workouts.filter((w: Workout) => w.user_id === m.user_id);
       let totalExtras = 0;
 
@@ -1206,12 +1160,26 @@ function EntrenosSection({ form, setForm, upload, workouts, onDelete }: any) {
   );
 }
 
-function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onRespondManualDebt, onDeleteDebt }: any) {
+function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUserId, onCreateManualDebt, onRespondManualDebt }: any) {
   const [targetUserId, setTargetUserId] = useState(members[0]?.user_id || '');
   const [importeManual, setImporteManual] = useState(5);
   const [conceptoManual, setConceptoManual] = useState('');
 
   const myPendingManualDebts = manualDebts.filter((d: ManualDebt) => d.user_id === currentUserId && d.estado === 'pendiente');
+
+  // Filtramos las deudas automáticas restando de forma reactiva los abonos/compensaciones manuales asociados a la semana
+  const deudasFiltradas = useMemo(() => {
+    return debts.map((d: Debt) => {
+      const compensacion = manualDebts
+        .filter((md: ManualDebt) => md.user_id === d.user_id && md.importe < 0 && md.concepto?.includes(d.semana_inicio))
+        .reduce((acc: number, md: ManualDebt) => acc + Math.abs(Number(md.importe)), 0);
+
+      const pendienteReal = Number(d.importe_pendiente) - compensacion;
+      return { ...d, pendienteReal };
+    }).filter((d: Debt & { pendienteReal: number }) => d.pendienteReal > 0);
+  }, [debts, manualDebts]);
+
+  const manualesActivas = manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada' && Number(d.importe) > 0);
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1274,42 +1242,24 @@ function DeudasSection({ debts, manualDebts, members, total, isAdmin, currentUse
 
       <CardView title="Desglose por participantes">
         <div className="debtList">
-          {debts.length || manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada').length ? (
+          {deudasFiltradas.length > 0 || manualesActivas.length > 0 ? (
             <>
-              {debts.map((d: Debt) => (
-                <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ flex: 1 }}>
-                    <span>
-                      <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
-                      <small style={{ display: 'block' }}>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <strong style={{ color: Number(d.importe_pendiente) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe_pendiente)}</strong>
-                    {isAdmin && Number(d.importe_pendiente) > 0 && (
-                      <button className="danger ghost" style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => onDeleteDebt(d, false)}>
-                        Borrar
-                      </button>
-                    )}
-                  </div>
+              {deudasFiltradas.map((d: Debt & { pendienteReal: number }) => (
+                <div className="debtrow" key={`${d.user_id}-${d.semana_inicio}`}>
+                  <span>
+                    <b>{members.find((m: Member) => m.user_id === d.user_id)?.profile?.nombre || 'Usuario'}</b>
+                    <small>Semana del {formatDate(d.semana_inicio)} · {d.dias_totales_fallados} días no cumplidos</small>
+                  </span>
+                  <strong style={{ color: d.pendienteReal === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.pendienteReal)}</strong>
                 </div>
               ))}
-              {manualDebts.filter((d: ManualDebt) => d.estado === 'aceptada').map((d: ManualDebt) => (
-                <div className="debtrow" key={`manual-${d.id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
-                  <div style={{ flex: 1 }}>
-                    <span>
-                      <b>{d.profile?.nombre || 'Usuario'}</b>
-                      <small style={{ display: 'block' }}>Deuda manual · <em>"{d.concepto}"</em></small>
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe)}</strong>
-                    {isAdmin && (
-                      <button className="danger ghost" style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => onDeleteDebt(d, true)}>
-                        Borrar
-                      </button>
-                    )}
-                  </div>
+              {manualesActivas.map((d: ManualDebt) => (
+                <div className="debtrow" key={`manual-${d.id}`}>
+                  <span>
+                    <b>{d.profile?.nombre || 'Usuario'}</b>
+                    <small>Deuda previa manual · <em>"{d.concepto}"</em></small>
+                  </span>
+                  <strong style={{ color: Number(d.importe) === 0 ? '#28a745' : '#ff6b6b' }}>{money(d.importe)}</strong>
                 </div>
               ))}
             </>
